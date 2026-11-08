@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "editeur",
+      "runtimeExecutable": "C:/Users/erosl/Documents/editeur/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:/Users/erosl/Documents/editeur/serveur.py"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "editeur-test",
+      "runtimeExecutable": "C:/Users/erosl/Documents/editeur/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:/Users/erosl/Documents/editeur/serveur.py",
+        "C:/Users/erosl/Documents/editeur/projets/essai_ui",
+        "--port",
+        "8771"
+      ],
+      "port": 8771
+    },
+    {
+      "name": "editeur-parole",
+      "runtimeExecutable": "C:/Users/erosl/Documents/editeur/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:/Users/erosl/Documents/editeur/serveur.py",
+        "C:/Users/erosl/Documents/editeur/projets/essai_parole",
+        "--port",
+        "8773"
+      ],
+      "port": 8773
+    }
+  ]
+}

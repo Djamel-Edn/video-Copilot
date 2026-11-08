@@ -1,0 +1,7 @@
+mcp>=2.3,<3
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+pytest
+pywebview

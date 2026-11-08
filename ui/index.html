@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Éditeur</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="logo">◧</span> Éditeur</div>
+  <div class="hgroup">
+    <label class="hbtn" title="Importer des médias (ou glisser-déposer)">Importer<input id="import" type="file" multiple hidden></label>
+    <button class="hbtn" id="settings" title="Paramètres de la séquence">Séquence</button>
+  </div>
+  <div class="hgroup">
+    <button class="hbtn icon" id="undo" title="Annuler (Ctrl+Z)">↶</button>
+    <button class="hbtn icon" id="redo" title="Rétablir (Ctrl+Y)">↷</button>
+  </div>
+  <span class="grow"></span>
+  <button class="hbtn primary" id="export" title="Exporter la vidéo en MP4 (Ctrl+M)">Exporter</button>
+  <span id="ai" title="Le copilote IA agit en direct dans cette fenêtre">● Copilote</span>
+  <span id="status" class="ko">Connexion…</span>
+</header>
+
+<main id="main">
+  <section class="panel" id="p-left">
+    <nav id="left-tabs" class="tabs">
+      <button data-tab="media" class="on">Médias</button>
+      <button data-tab="effects">Effets</button>
+      <button data-tab="text">Textes</button>
+      <button data-tab="transcript" title="Montage par le texte">Parole</button>
+      <button data-tab="journal">Journal</button>
+    </nav>
+    <div id="left-body" class="panel-body"></div>
+  </section>
+
+  <section class="panel" id="p-monitor">
+    <div class="panel-title">Programme</div>
+    <div id="stage">
+      <div id="screen"><canvas id="preview" width="1280" height="720"></canvas><canvas id="overlay"></canvas></div>
+    </div>
+    <div id="transport"></div>
+  </section>
+
+  <section class="panel" id="p-inspector">
+    <div class="panel-title">Contrôles d'effets</div>
+    <div id="inspector" class="panel-body"></div>
+  </section>
+</main>
+
+<div id="splitter" title="Glisser pour redimensionner"></div>
+
+<section class="panel" id="p-timeline">
+  <div id="tl-toolbar">
+    <div class="seg tools">
+      <button data-tool="select" class="on" title="Sélection (V)">➤</button>
+      <button data-tool="razor" title="Lame : cliquer pour couper (C) · Maj = toutes les pistes">✂</button>
+      <button data-tool="text" title="Texte : cliquer sur une piste vidéo (T)">T</button>
+    </div>
+    <button id="tlsplit" title="Scinder à la tête de lecture (Ctrl+K)">Scinder</button>
+    <button id="snap" class="on" title="Magnétisme (S)">🧲 Magnétisme</button>
+    <span class="grow"></span>
+    <button id="addv" title="Ajouter une piste vidéo">+ Vidéo</button>
+    <button id="adda" title="Ajouter une piste audio">+ Audio</button>
+    <span class="zoom">−<input id="tlzoom" type="range" min="0.7" max="7" step="0.01" value="4.1">+</span>
+    <button id="tlfit" title="Tout afficher (\)">Ajuster</button>
+  </div>
+  <canvas id="timeline"></canvas>
+</section>
+
+<datalist id="fontlist"></datalist>
+<div id="modal" hidden></div>
+<div id="menu" hidden></div>
+<div id="toasts"></div>
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>
