@@ -156,3 +156,12 @@ def test_montage_par_le_texte():
     assert [m["w"] for m in mots2] == ["Bonjour", "tout", "le", "monde"]
     gap = mots2[2]["start"] - mots2[1]["end"]
     assert abs(gap - 0.2) < 0.02
+
+
+def test_rotation_des_videos_de_telephone():
+    from moteur.medias import rotation
+    assert rotation({"side_data_list": [{"rotation": 90}]}) == 90
+    assert rotation({"side_data_list": [{"rotation": -90}]}) == 270
+    assert rotation({"side_data_list": [{"side_data_type": "Display Matrix", "rotation": 180.0}]}) == 180
+    assert rotation({"tags": {"rotate": "270"}}) == 270
+    assert rotation({}) == 0

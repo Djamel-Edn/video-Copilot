@@ -55,7 +55,9 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 ## Ce qui marche (vérifié le 2026-11-08)
 
 - Import vidéo / audio / image, proxys 540p générés en arrière-plan,
-  vignettes et formes d'onde.
+  vignettes et formes d'onde. Les vidéos de téléphone filmées à la verticale
+  (image stockée couchée + consigne de rotation) sont lues à leurs vraies
+  dimensions ; les projets plus anciens sont corrigés au démarrage.
 - Timeline : déplacer (plusieurs clips, d'une piste à l'autre), rogner,
   scinder, lame, dupliquer, copier-coller, supprimer avec resserrage,
   magnétisme, verrouillage.

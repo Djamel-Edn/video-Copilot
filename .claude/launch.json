@@ -30,6 +30,17 @@
         "8773"
       ],
       "port": 8773
+    },
+    {
+      "name": "editeur-rotation",
+      "runtimeExecutable": "C:/Users/erosl/Documents/editeur/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:/Users/erosl/Documents/editeur/serveur.py",
+        "C:/Users/erosl/Documents/editeur/projets/essai_rotation",
+        "--port",
+        "8774"
+      ],
+      "port": 8774
     }
   ]
 }

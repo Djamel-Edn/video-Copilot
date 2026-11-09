@@ -16,6 +16,7 @@ import struct
 import subprocess
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -50,6 +51,7 @@ class Etat:
         self._save_task: asyncio.Task | None = None
         self.export: dict = {"state": "idle"}
         self.cache_mots: dict = {}
+        self.proxys_a_refaire: list[str] = []
 
     # --- persistance (écriture atomique, regroupée) ---
     def planifier_sauvegarde(self):
@@ -122,8 +124,37 @@ class Etat:
             self.attente.pop(rid, None)
 
 
+async def verifier_medias(etat: Etat):
+    """Médias importés avant la gestion de la rotation : relire leurs dimensions d'affichage."""
+    for mid, m in list(etat.projet.doc["media"].items()):
+        if m["kind"] != "video" or "rotation" in m or not Path(m["path"]).exists():
+            continue
+        try:
+            info = await asyncio.to_thread(medias.probe, Path(m["path"]))
+        except Exception:
+            continue
+        patches = [{"op": "set", "path": ["media", mid, "rotation"], "value": info.get("rotation", 0)}]
+        if (info.get("width"), info.get("height")) != (m.get("width"), m.get("height")):
+            patches += [{"op": "set", "path": ["media", mid, k], "value": info[k]} for k in ("width", "height")]
+            # Ancien proxy fait avec la mauvaise orientation de cadre : on le refait.
+            if m.get("proxy"):
+                patches.append({"op": "set", "path": ["media", mid, "proxy"], "value": None})
+                etat.proxys_a_refaire.append(mid)
+        await etat.systeme(patches)
+
+
 def creer_app(etat: Etat) -> FastAPI:
-    app = FastAPI(title="editeur")
+    @asynccontextmanager
+    async def lifespan(_app):
+        async def demarrage():
+            await verifier_medias(etat)
+            for mid in etat.proxys_a_refaire:
+                m = etat.projet.doc["media"][mid]
+                await proxy(mid, Path(m["path"]), m["kind"])
+        asyncio.get_running_loop().create_task(demarrage())
+        yield
+
+    app = FastAPI(title="editeur", lifespan=lifespan)
     origines = {f"http://127.0.0.1:{etat.port}", f"http://localhost:{etat.port}"}
 
     @app.middleware("http")

@@ -35,6 +35,12 @@ def probe(path: Path) -> dict:
          "has_audio": a is not None, "proxy": None}
     if v is not None:
         m["width"], m["height"] = int(v["width"]), int(v["height"])
+        # Vidéos de téléphone : l'image est stockée couchée avec une consigne « tourner de 90° ».
+        # FFmpeg et le navigateur la redressent au décodage ; on enregistre donc les
+        # dimensions telles qu'elles s'affichent.
+        m["rotation"] = rotation(v)
+        if m["rotation"] in (90, 270):
+            m["width"], m["height"] = m["height"], m["width"]
         try:
             m["fps"] = float(Fraction(v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1"))
         except (ZeroDivisionError, ValueError):
@@ -48,12 +54,28 @@ def probe(path: Path) -> dict:
     return m
 
 
+def rotation(stream: dict) -> int:
+    """Rotation d'affichage en degrés (0, 90, 180, 270), depuis la matrice d'affichage ou l'ancien tag."""
+    rot = 0.0
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            rot = float(sd["rotation"])
+            break
+    else:
+        try:
+            rot = float((stream.get("tags") or {}).get("rotate", 0))
+        except ValueError:
+            rot = 0.0
+    return int(round(rot / 90.0)) * 90 % 360
+
+
 def proxy_command(src: Path, dst: Path, kind: str) -> list[str]:
     if kind == "audio":
         return ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-c:a", "aac", "-b:a", "160k", str(dst)]
-    # 540p, une image clé par image : le défilement et les sauts sont instantanés.
+    # Petit côté à 540 px (paysage comme portrait), une image clé par image : le
+    # défilement et les sauts sont instantanés. FFmpeg redresse les vidéos tournées.
     return ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-            "-vf", "scale=-2:'min(540,ih)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+            "-vf", "scale='if(gt(iw,ih),-2,min(540,iw))':'if(gt(iw,ih),min(540,ih),-2)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
             "-g", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart", str(dst)]
 
