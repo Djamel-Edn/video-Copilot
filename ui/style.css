@@ -183,3 +183,8 @@ code.path { display: block; word-break: break-all; background: #111215; padding:
 .wd.sel { background: #5a2a32; color: #ffd0d6; text-decoration: line-through; }
 .wd.cur { background: #24406a; color: #fff; }
 small.err { color: #ff9aa6; }
+.tr-subs { padding: 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.tr-subs-title { font-weight: 600; font-size: 12px; }
+.tr-subs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tr-subs-row select { flex: 1; min-width: 0; }
+.tr-subs p { margin: 0; }

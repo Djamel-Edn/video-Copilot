@@ -134,6 +134,34 @@ class App {
   }
 
   defs() { return { ...this.builtin, ...(this.doc?.effects || {}) }; }
+
+  // Le son d'une vidéo posé sur une piste audio se comporte comme un clip audio.
+  clipKind(c) {
+    if (c.type !== 'media') return c.type;
+    const k = this.doc.media[c.media]?.kind || 'video';
+    if (k === 'video' && this.doc.tracks.find(t => t.id === c.track)?.kind === 'audio') return 'audio';
+    return k;
+  }
+
+  // Un clip et ses clips liés (image + son séparé).
+  group(id) {
+    const c = this.doc.clips[id];
+    if (!c?.link) return [id];
+    return [id, ...Object.values(this.doc.clips).filter(o => o.link === c.link && o.id !== id).map(o => o.id)];
+  }
+
+  withLinks(ids) { return [...new Set(ids.flatMap(id => this.group(id)))]; }
+
+  // Un seul clip par groupe lié (le moteur scinde le partenaire tout seul).
+  oneByLink(ids) {
+    const seen = new Set();
+    return ids.filter(id => { const l = this.doc.clips[id]?.link; if (!l) return true; if (seen.has(l)) return false; seen.add(l); return true; });
+  }
+
+  async separateAudio(id) {
+    const r = await this.send([{ op: 'separate_audio', clip: id }], 'Séparer le son');
+    if (r) this.select(this.group(id));
+  }
   duration() { return Math.max(0, ...Object.values(this.doc?.clips || {}).map(c => c.start + c.duration)); }
 
   thumb(mid) {
@@ -280,7 +308,7 @@ class App {
   applyEffect(name, ids) {
     const ok = ids.filter(id => {
       const c = this.doc.clips[id];
-      return c && !(c.type === 'media' && this.doc.media[c.media]?.kind === 'audio');
+      return c && this.clipKind(c) !== 'audio';
     });
     if (!ok.length) { this.toast('Sélectionne d\'abord un clip visuel (ou glisse l\'effet dessus).', true); return; }
     this.send(ok.map(id => ({ op: 'add_effect', clip: id, effect: name })), `Effet ${this.defs()[name]?.label || name}`);
@@ -299,6 +327,7 @@ class App {
       const c = this.doc.clips[id];
       return c && c.start < t - 1e-3 && t < c.start + c.duration - 1e-3 && !this.doc.tracks.find(x => x.id === c.track)?.locked;
     });
+    ids = this.oneByLink(ids);
     if (ids.length) this.send(ids.map(id => ({ op: 'split_clip', clip: id, at: t })), 'Scinder à la tête de lecture');
   }
 
@@ -385,7 +414,7 @@ class App {
     else if (ctrl && k === 'k') { stop(); this.splitAtPlayhead(); }
     else if (ctrl && k === 'c') { stop(); this.copy(); }
     else if (ctrl && k === 'v') { stop(); this.paste(); }
-    else if (ctrl && k === 'd') { stop(); this.send(this.selection.map(id => ({ op: 'duplicate_clip', clip: id, overwrite: true })), 'Dupliquer'); }
+    else if (ctrl && k === 'd') { stop(); this.send(this.withLinks(this.selection).map(id => ({ op: 'duplicate_clip', clip: id, overwrite: true })), 'Dupliquer'); }
     else if (ctrl && k === 'm') { stop(); openExport(this); }
     else if (ctrl && k === 'a') { stop(); this.select(Object.keys(this.doc.clips)); }
     else if (k === 'delete' || k === 'backspace') { stop(); if (!this.panels.cutSelection() && !this.inspector.deleteSelectedKey()) this.deleteSelection(e.shiftKey); }

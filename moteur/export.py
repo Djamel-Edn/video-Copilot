@@ -146,7 +146,7 @@ def audio_graph(doc, t0: float, t1: float, first_input: int = 1):
         tr = track_of(doc, c["track"])
         if not m or not tr or tr.get("muted") or m["kind"] == "image":
             continue
-        if not (m["kind"] == "audio" or m.get("has_audio")):
+        if not (m["kind"] == "audio" or m.get("has_audio")) or c.get("audio_muted"):
             continue
         a, b = max(c["start"], t0), min(c["start"] + c["duration"], t1)
         if b - a < 1e-4:
@@ -156,8 +156,11 @@ def audio_graph(doc, t0: float, t1: float, first_input: int = 1):
         k = first_input + inputs.index(m["path"])
         src_in = c["in"] + (a - c["start"]) * c["speed"]
         offset = a - c["start"]
+        # Mono : copié tel quel sur les deux canaux (la conversion par défaut le baisse de 3 dB,
+        # alors que l'aperçu le joue à plein niveau).
+        mono = ["aresample=48000", "pan=stereo|c0=c0|c1=c0"] if m.get("channels") == 1 else []
         chain = [f"atrim=start={src_in:.6f}:duration={(b - a) * c['speed']:.6f}", "asetpts=PTS-STARTPTS",
-                 "aformat=sample_rates=48000:channel_layouts=stereo", *_atempo(c["speed"]),
+                 *mono, "aformat=sample_rates=48000:channel_layouts=stereo", *_atempo(c["speed"]),
                  f"volume='{volume_expr(c['keyframes'].get('volume', []), c['props']['volume'], offset)}':eval=frame",
                  f"adelay=delays={int(round((a - t0) * 1000))}:all=1"]
         lab = f"a{len(labels)}"

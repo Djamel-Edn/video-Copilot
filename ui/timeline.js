@@ -48,7 +48,7 @@ export class Timeline {
   x(t) { return LABEL + (t - this.scroll) * this.pps; }
   t(x) { return (x - LABEL) / this.pps + this.scroll; }
   flash(id) { this.flashes.set(id, performance.now()); this.dirty = true; }
-  kind(c) { return c.type === 'media' ? (this.app.doc.media[c.media]?.kind || 'video') : c.type; }
+  kind(c) { return this.app.clipKind(c); }
 
   setZoom(pps, anchorX = LABEL) {
     const tAt = this.t(anchorX);
@@ -138,7 +138,7 @@ export class Timeline {
       if (h.clip && !this.locked(h.clip.track)) {
         const at = this.snapT(tAt);
         if (at > h.clip.start + 1e-3 && at < h.clip.start + h.clip.duration - 1e-3) {
-          const ids = e.shiftKey ? Object.values(app.doc.clips).filter(c => c.start < at && at < c.start + c.duration && !this.locked(c.track)).map(c => c.id) : [h.clip.id];
+          const ids = app.oneByLink(e.shiftKey ? Object.values(app.doc.clips).filter(c => c.start < at && at < c.start + c.duration && !this.locked(c.track)).map(c => c.id) : [h.clip.id]);
           app.send(ids.map(id => ({ op: 'split_clip', clip: id, at })), 'Lame');
         }
       }
@@ -155,15 +155,18 @@ export class Timeline {
       return;
     }
     const c = h.clip;
+    const group = e.altKey ? [c.id] : app.group(c.id);
     if (e.shiftKey || e.ctrlKey) {
       const s = new Set(app.selection);
-      s.has(c.id) ? s.delete(c.id) : s.add(c.id);
+      const on = s.has(c.id);
+      for (const id of group) on ? s.delete(id) : s.add(id);
       app.select([...s]);
       return;
     }
-    if (!app.selection.includes(c.id)) app.select([c.id]);
+    if (!app.selection.includes(c.id)) app.select(group);
     if (this.locked(c.track)) return;
-    const ids = h.zone === 'body' ? app.selection.filter(id => !this.locked(app.doc.clips[id]?.track)) : [c.id];
+    // Rogner un clip lié rogne aussi son partenaire (sauf Alt).
+    const ids = (h.zone === 'body' ? app.selection : group).filter(id => !this.locked(app.doc.clips[id]?.track));
     this.drag = { mode: h.zone, id: c.id, ids, x0: px, y0: py, origs: Object.fromEntries(ids.map(id => [id, { ...app.doc.clips[id] }])), preview: null };
     app.busy = true;
   }
@@ -207,11 +210,14 @@ export class Timeline {
       let delta = this.snapT(o.start + dt, [o.id]) - o.start;
       delta = Math.max(delta, -o.start, -o.in / o.speed);
       delta = Math.min(delta, o.duration - minDur);
-      d.preview[o.id] = { start: o.start + delta, in: o.in + delta * o.speed, duration: o.duration - delta };
+      for (const id of d.ids) {
+        const oc = d.origs[id];
+        d.preview[id] = { start: oc.start + delta, in: oc.in + delta * oc.speed, duration: oc.duration - delta };
+      }
     } else if (d.mode === 'right') {
       let dur = Math.max(minDur, this.snapT(o.start + o.duration + dt, [o.id]) - o.start);
       dur = Math.min(dur, (maxSrc - o.in) / o.speed);
-      d.preview[o.id] = { duration: dur };
+      for (const id of d.ids) d.preview[id] = { duration: d.origs[id].duration + (dur - o.duration) };
     }
     this.dirty = true;
   }
@@ -253,16 +259,31 @@ export class Timeline {
     e.preventDefault();
     const app = this.app, [px, py] = this.pos(e), h = this.hit(px, py);
     if (!h.clip) return;
-    if (!app.selection.includes(h.clip.id)) app.select([h.clip.id]);
+    if (!app.selection.includes(h.clip.id)) app.select(app.group(h.clip.id));
     const c = h.clip;
+    const group = app.group(c.id);
+    const m = c.type === 'media' ? app.doc.media[c.media] : null;
+    const linkItems = [];
+    if (app.clipKind(c) === 'video' && m?.has_audio && !c.audio_muted) {
+      linkItems.push({ label: 'Séparer le son', action: () => app.separateAudio(c.id) });
+    }
+    if (c.link) linkItems.push({ label: 'Délier image et son', action: () => app.send([{ op: 'unlink_clips', clips: group }], 'Délier') });
+    if (app.selection.length >= 2 && !c.link) {
+      linkItems.push({ label: 'Lier la sélection', action: () => app.send([{ op: 'link_clips', clips: app.selection }], 'Lier') });
+    }
+    if (c.audio_muted) {
+      linkItems.push({ label: 'Réactiver le son de la vidéo', action: () => app.send([{ op: 'update_clip', clip: c.id, audio_muted: false }], 'Réactiver le son') });
+    }
     contextMenu(e.clientX, e.clientY, [
       { label: 'Scinder ici', action: () => app.send([{ op: 'split_clip', clip: c.id, at: this.snapT(this.t(px)) }], 'Scinder') },
-      { label: 'Dupliquer à la suite', action: () => app.send([{ op: 'duplicate_clip', clip: c.id, overwrite: true }], 'Dupliquer') },
+      { label: 'Dupliquer à la suite', action: () => app.send(group.map(id => ({ op: 'duplicate_clip', clip: id, overwrite: true })), 'Dupliquer') },
       { label: 'Copier (Ctrl+C)', action: () => app.copy() },
+      ...(linkItems.length ? ['-', ...linkItems] : []),
       '-',
       { label: 'Vitesse…', action: () => {
         const v = parseFloat(prompt('Vitesse en % (100 = normale)', Math.round(c.speed * 100)));
-        if (v > 0) app.send([{ op: 'update_clip', clip: c.id, speed: v / 100, duration: c.duration * c.speed / (v / 100) }], 'Vitesse');
+        if (v > 0) app.send(group.map(id => { const g = app.doc.clips[id];
+          return { op: 'update_clip', clip: id, speed: v / 100, duration: g.duration * g.speed / (v / 100) }; }), 'Vitesse');
       } },
       { label: 'Renommer…', action: () => { const n = prompt('Nom du clip', c.name); if (n) app.send([{ op: 'update_clip', clip: c.id, name: n }], 'Renommer'); } },
       '-',
@@ -360,7 +381,7 @@ export class Timeline {
       g.save(); g.beginPath(); g.roundRect(x0, y, Math.max(2, x1 - x0), h, 4); g.clip();
       if (kind === 'video' || kind === 'image') this.drawThumbs(g, c, x0, x1, y + 16, h - 16);
       const m = c.type === 'media' ? doc.media[c.media] : null;
-      if (kind === 'audio' || (kind === 'video' && m?.has_audio && h > 40)) {
+      if (kind === 'audio' || (kind === 'video' && m?.has_audio && !c.audio_muted && h > 40)) {
         const wh = kind === 'audio' ? h - 16 : 12;
         this.drawWave(g, c, m, x0, x1, y + h - wh, wh, kind === 'audio' ? '#8fe3b5' : 'rgba(255,255,255,.45)');
       }
@@ -369,7 +390,8 @@ export class Timeline {
       const tags = [];
       if (c.speed !== 1) tags.push(`${Math.round(c.speed * 100)} %`);
       if (c.effects.length) tags.push('fx');
-      g.fillText(`${c.name}${tags.length ? '  ·  ' + tags.join(' · ') : ''}`, Math.max(x0, LABEL) + 5, y + 8);
+      if (c.audio_muted) tags.push('son séparé');
+      g.fillText(`${c.link ? '🔗 ' : ''}${c.name}${tags.length ? '  ·  ' + tags.join(' · ') : ''}`, Math.max(x0, LABEL) + 5, y + 8);
       // images clés
       const times = new Set();
       for (const ks of Object.values(c.keyframes)) for (const k of ks) times.add(k.t);

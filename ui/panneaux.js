@@ -159,6 +159,42 @@ export class Panneaux {
     this.sel = null;
   }
 
+  subtitlesBox() {
+    const app = this.app;
+    const STYLES = [['classique', 'Classique (bas, fond)'], ['shorts', 'Shorts (gros, 1 à 3 mots)'], ['minimal', 'Minimal (blanc, ombre)']];
+    this.subStyle ||= app.doc.settings.height > app.doc.settings.width ? 'shorts' : 'classique';
+    const style = el('select', {}, STYLES.map(([v, l]) => el('option', { value: v, selected: v === this.subStyle }, l)));
+    style.onchange = () => { this.subStyle = style.value; };
+    const words = el('input', { type: 'number', min: '1', max: '12', step: '1', placeholder: 'auto', class: 'gapin',
+                                title: 'Nombre maximal de mots par sous-titre (vide = selon le style)' });
+    words.addEventListener('keydown', e => e.stopPropagation());
+    const post = async (url, body) => {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) { app.toast(d.error || d.detail || 'Échec', true); return null; }
+      return d;
+    };
+    const hasTrack = app.doc.tracks.some(t => t.role === 'subtitles');
+    return el('div', { class: 'tr-subs' },
+      el('div', { class: 'tr-subs-title' }, 'Sous-titres automatiques'),
+      el('div', { class: 'tr-subs-row' }, style, el('span', { class: 'muted small' }, 'mots max'), words),
+      el('div', { class: 'tr-subs-row' },
+        el('button', { class: 'primary', title: 'Remplace les sous-titres existants de la piste « Sous-titres »', onclick: async () => {
+          const body = { style: style.value };
+          if (+words.value > 0) body.max_words = +words.value;
+          const d = await post('/api/subtitles', body);
+          if (d) app.toast(`${d.count} sous-titres posés sur la piste « Sous-titres »`);
+        } }, hasTrack ? 'Régénérer les sous-titres' : 'Générer les sous-titres'),
+        el('button', { disabled: !hasTrack, title: 'Fichier .srt à envoyer à YouTube avec la vidéo', onclick: async () => {
+          const d = await post('/api/subtitles/save_srt', {});
+          if (d) {
+            app.toast(`${d.count} sous-titres enregistrés : ${d.path}`);
+            post('/api/reveal', { path: d.path });
+          }
+        } }, 'Enregistrer le .srt')),
+      el('p', { class: 'muted small' }, 'Chaque sous-titre est un clip texte : clique-le dans la timeline pour corriger le texte ou le style.'));
+  }
+
   hasSelection() { return this.tab === 'transcript' && this.sel && this.sel.a !== null; }
 
   cutSelection() {
@@ -195,14 +231,18 @@ export class Panneaux {
       el('span', { class: 'tr-gap' }, el('button', { onclick: () => this.textEdit({ action: 'silences', min_gap: +gap.value || 0.7, keep: 0.25 }),
         title: 'Réduit chaque blanc plus long que la valeur à 0,25 s' }, 'Raccourcir les silences >'), gap, ' s'),
       el('button', { onclick: () => this.cutSelection(), title: 'Ou touche Suppr' }, 'Couper la sélection')));
+    l.append(this.subtitlesBox());
     const words = this.words();
     this.wordList = words;
     const text = el('div', { class: 'ttext' });
     if (!words.length) text.append(el('p', { class: 'muted small' }, 'Aucun mot dans la séquence : transcris un média puis place-le sur la timeline.'));
     words.forEach((w, i) => {
       if (i > 0 && w.start - words[i - 1].end > 1.5) text.append(el('br'), el('br'));
-      const sp = el('span', { class: 'wd' + (w.p < 0.5 ? ' low' : ''), 'data-i': i, title: `${w.start.toFixed(2)} s` }, w.w);
-      text.append(sp, ' ');
+      const sp = el('span', { class: 'wd' + (w.p < 0.5 ? ' low' : ''), 'data-i': i, title: `${w.start.toFixed(2)} s` }, w.w.trim());
+      // Recoller comme Whisper l'a découpé : « n » + « 'a » → « n'a », pas d'espace avant la ponctuation.
+      const prev = i > 0 ? words[i - 1].w.trim() : '';
+      if (i > 0 && !/^['’,.!?;:…)\-]/.test(w.w.trim()) && !/['’\-(]$/.test(prev)) text.append(' ');
+      text.append(sp);
     });
     const idx = e => { const t = e.target.closest('.wd'); return t ? +t.dataset.i : null; };
     text.addEventListener('pointerdown', e => {

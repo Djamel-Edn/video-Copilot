@@ -71,7 +71,7 @@ export class Sources {
       const tgt = this.target(clip, t);
       const vol = clipProps(clip, t - clip.start).volume;
       el.volume = Math.max(0, Math.min(1, vol));
-      el.muted = !!track?.muted || vol <= 0;
+      el.muted = !!track?.muted || vol <= 0 || !!clip.audio_muted;
       if (playing) {
         if (Math.abs(el.playbackRate - clip.speed) > 1e-3) el.playbackRate = clip.speed;
         if (el.paused) { el.currentTime = tgt; el.play().catch(() => {}); }

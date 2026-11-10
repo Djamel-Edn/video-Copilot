@@ -27,8 +27,18 @@ export class Inspecteur {
   tick() { for (const r of this.rows) r(); }
 
   clip() {
+    const s = this.app.selection, doc = this.app.doc;
+    if (s.length === 1) return doc.clips[s[0]];
+    // Une paire image + son liée se règle comme un seul clip : on montre la partie image.
+    if (this.isOneGroup()) return s.map(id => doc.clips[id]).find(c => c && this.app.clipKind(c) !== 'audio') || doc.clips[s[0]];
+    return null;
+  }
+
+  isOneGroup() {
     const s = this.app.selection;
-    return s.length === 1 ? this.app.doc.clips[s[0]] : null;
+    if (s.length < 2) return false;
+    const g = new Set(this.app.group(s[0]));
+    return g.size === s.length && s.every(id => g.has(id));
   }
 
   build() {
@@ -40,7 +50,7 @@ export class Inspecteur {
     this.rows = [];
     const doc = app.doc;
     if (!doc) return;
-    if (app.selection.length > 1) {
+    if (app.selection.length > 1 && !this.isOneGroup()) {
       root.append(el('div', { class: 'insp-empty' },
         el('p', {}, `${app.selection.length} clips sélectionnés.`),
         el('p', { class: 'muted' }, 'Glisse un effet sur l\'un d\'eux, ou double-clique un effet pour l\'appliquer à tous.'),
@@ -59,9 +69,10 @@ export class Inspecteur {
     }
     const id = c.id;
     const get = () => app.doc.clips[id];
-    const kind = c.type === 'media' ? doc.media[c.media]?.kind : c.type;
+    const kind = app.clipKind(c);
     const visual = kind !== 'audio';
-    const hasAudio = kind === 'audio' || (kind === 'video' && doc.media[c.media]?.has_audio);
+    const media = c.type === 'media' ? doc.media[c.media] : null;
+    const hasAudio = kind === 'audio' || (kind === 'video' && media?.has_audio && !c.audio_muted);
 
     // en-tête
     const name = el('input', { class: 'clipname', value: c.name });
@@ -74,15 +85,17 @@ export class Inspecteur {
 
     // montage
     const sec = this.section('Montage', root);
+    // Sur une paire image + son liée, le montage s'applique aux deux clips.
+    const both = (label, f) => app.send(app.group(id).map(gid => ({ op: 'update_clip', clip: gid, ...f(app.doc.clips[gid]) })), label);
     sec.append(this.plainRow('Début', get().start, { step: 1 / doc.settings.fps, decimals: 2, unit: ' s', min: 0 },
-      v => app.send([{ op: 'update_clip', clip: id, start: v }], 'Début du clip')));
+      v => both('Début du clip', () => ({ start: v }))));
     sec.append(this.plainRow('Durée', get().duration, { step: 1 / doc.settings.fps, decimals: 2, unit: ' s', min: 1 / doc.settings.fps },
-      v => app.send([{ op: 'update_clip', clip: id, duration: v }], 'Durée du clip')));
+      v => both('Durée du clip', () => ({ duration: v }))));
     if (c.type === 'media' && kind !== 'image') {
-      sec.append(this.plainRow('Point d\'entrée', get().in, { step: 1 / doc.settings.fps, decimals: 2, unit: ' s', min: 0 },
-        v => app.send([{ op: 'update_clip', clip: id, in: v }], 'Point d\'entrée')));
+      sec.append(this.plainRow("Point d'entrée", get().in, { step: 1 / doc.settings.fps, decimals: 2, unit: ' s', min: 0 },
+        v => both("Point d'entrée", () => ({ in: v }))));
       sec.append(this.plainRow('Vitesse', get().speed, { step: 0.005, decimals: 0, mul: 100, unit: ' %', min: 0.05, max: 16 },
-        v => app.send([{ op: 'update_clip', clip: id, speed: v, duration: get().duration * get().speed / v }], 'Vitesse')));
+        v => both('Vitesse', g => ({ speed: v, duration: g.duration * g.speed / v }))));
     }
 
     if (visual) {
@@ -101,9 +114,19 @@ export class Inspecteur {
       s.append(this.line('Couleur', colorInput(c.color, v => app.send([{ op: 'update_clip', clip: id, color: v }], 'Couleur de l\'aplat'),
         v => { get().color = v; app.dirty = true; })));
     }
-    if (hasAudio) {
+    if (hasAudio || (kind === 'video' && media?.has_audio)) {
       const s = this.section('Audio', root);
-      s.append(this.propRow(get, 'volume', 'Volume', { step: 0.005, decimals: 0, mul: 100, unit: ' %', min: 0, max: 2 }));
+      if (hasAudio) s.append(this.propRow(get, 'volume', 'Volume', { step: 0.005, decimals: 0, mul: 100, unit: ' %', min: 0, max: 2 }));
+      if (kind === 'video' && media?.has_audio && !c.audio_muted) {
+        s.append(this.line('Son', el('button', { onclick: () => app.separateAudio(id), title: 'Le son passe sur une piste audio, lié à l\'image' }, 'Séparer le son')));
+      } else if (c.audio_muted) {
+        s.append(this.line('Son', el('span', { class: 'muted small' }, 'séparé sur une piste audio'),
+          el('button', { class: 'mini', onclick: () => app.send([{ op: 'update_clip', clip: id, audio_muted: false }], 'Réactiver le son') }, 'Réactiver')));
+      }
+      if (c.link) {
+        s.append(this.line('Lien', el('span', { class: 'muted small' }, '🔗 image et son liés'),
+          el('button', { class: 'mini', onclick: () => app.send([{ op: 'unlink_clips', clips: app.group(id) }], 'Délier') }, 'Délier')));
+      }
     }
     if (visual) this.effectsSection(get, root);
   }

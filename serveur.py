@@ -21,11 +21,11 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from moteur import export as exp
-from moteur import medias, texte
+from moteur import medias, sous_titres, texte
 from moteur.effets import BUILTIN, CONTRAT_GLSL
 from moteur.projet import OPS, OpError, Projet, duree_totale, nouveau_document
 
@@ -127,13 +127,16 @@ class Etat:
 async def verifier_medias(etat: Etat):
     """Médias importés avant la gestion de la rotation : relire leurs dimensions d'affichage."""
     for mid, m in list(etat.projet.doc["media"].items()):
-        if m["kind"] != "video" or "rotation" in m or not Path(m["path"]).exists():
+        a_relire = (m["kind"] == "video" and "rotation" not in m) or             (m["kind"] != "image" and m.get("has_audio", m["kind"] == "audio") and "channels" not in m)
+        if not a_relire or not Path(m["path"]).exists():
             continue
         try:
             info = await asyncio.to_thread(medias.probe, Path(m["path"]))
         except Exception:
             continue
-        patches = [{"op": "set", "path": ["media", mid, "rotation"], "value": info.get("rotation", 0)}]
+        patches = [{"op": "set", "path": ["media", mid, "channels"], "value": info.get("channels", 0)}]
+        if m["kind"] == "video":
+            patches.append({"op": "set", "path": ["media", mid, "rotation"], "value": info.get("rotation", 0)})
         if (info.get("width"), info.get("height")) != (m.get("width"), m.get("height")):
             patches += [{"op": "set", "path": ["media", mid, k], "value": info[k]} for k in ("width", "height")]
             # Ancien proxy fait avec la mauvaise orientation de cadre : on le refait.
@@ -433,6 +436,56 @@ def creer_app(etat: Etat) -> FastAPI:
         except OpError as e:
             return err(e)
         return {"ok": True, "cuts": len(plages), "removed_seconds": round(sum(b - a for a, b in plages), 2)}
+
+    # ------------------------------------------------------------ sous-titres automatiques
+    @app.get("/api/subtitles/styles")
+    async def subtitle_styles():
+        return {k: {"label": v["label"], "max_chars": v["max_chars"], "max_lines": v["max_lines"],
+                    "max_words": v["max_words"]} for k, v in sous_titres.STYLES.items()}
+
+    @app.post("/api/subtitles")
+    async def subtitles(body: dict):
+        style = body.get("style", "classique")
+        if style not in sous_titres.STYLES:
+            raise HTTPException(400, f"Style inconnu : {style!r}. Styles : {list(sous_titres.STYLES)}.")
+        st = sous_titres.STYLES[style]
+        start = float(body.get("start") or 0.0)
+        end = body.get("end")
+        end = None if end is None else float(end)
+        mots = [m for m in texte.mots_timeline(etat.projet.doc, transcripts())
+                if m["end"] > start and (end is None or m["start"] < end)]
+        if not mots:
+            raise HTTPException(400, "Aucun mot dans la séquence : transcris d'abord un média (onglet Parole).")
+        caps = sous_titres.decouper(mots, int(body.get("max_chars") or st["max_chars"]),
+                                    int(body.get("max_lines") or st["max_lines"]),
+                                    body.get("max_words") or st["max_words"])
+        try:
+            await etat.appliquer(sous_titres.ops(etat.projet.doc, caps, style, body.get("replace", True), start, end),
+                                 body.get("label") or f"Sous-titres automatiques ({len(caps)})", body.get("origin", "ui"))
+        except OpError as e:
+            return err(e)
+        tr = sous_titres.piste(etat.projet.doc)
+        return {"ok": True, "count": len(caps), "track": tr["id"] if tr else None}
+
+    @app.get("/api/subtitles.srt")
+    async def subtitles_srt():
+        data = sous_titres.srt(etat.projet.doc)
+        if not data:
+            raise HTTPException(404, "Pas de piste de sous-titres.")
+        name = f"{etat.dossier.name}.srt"
+        return Response(data.encode("utf-8-sig"), media_type="application/x-subrip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.post("/api/subtitles/save_srt")
+    async def subtitles_save_srt(body: dict):
+        """Écrit le .srt à côté des exports (pour l'envoyer à YouTube avec la vidéo)."""
+        data = sous_titres.srt(etat.projet.doc)
+        if not data:
+            raise HTTPException(404, "Pas de piste de sous-titres.")
+        out = Path(body.get("path") or (etat.dossier / "exports" / f"{etat.dossier.name}.srt"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(data, "utf-8-sig")
+        return {"ok": True, "path": str(out), "count": data.count(" --> ")}
 
     # ------------------------------------------------------------ export
     def chemin_defaut():

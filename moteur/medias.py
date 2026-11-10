@@ -32,7 +32,7 @@ def probe(path: Path) -> dict:
         raise ValueError(f"Aucun flux audio ni vidéo dans {path.name}.")
     m = {"name": path.name, "path": str(path.resolve()), "kind": kind,
          "duration": float(info["format"].get("duration") or 0.0) if kind != "image" else 0.0,
-         "has_audio": a is not None, "proxy": None}
+         "has_audio": a is not None, "channels": int(a.get("channels") or 2) if a else 0, "proxy": None}
     if v is not None:
         m["width"], m["height"] = int(v["width"]), int(v["height"])
         # Vidéos de téléphone : l'image est stockée couchée avec une consigne « tourner de 90° ».

@@ -165,3 +165,58 @@ def test_rotation_des_videos_de_telephone():
     assert rotation({"side_data_list": [{"side_data_type": "Display Matrix", "rotation": 180.0}]}) == 180
     assert rotation({"tags": {"rotate": "270"}}) == 270
     assert rotation({}) == 0
+
+
+def test_separer_le_son_et_clips_lies():
+    p = projet_avec_media()
+    p.appliquer([{"op": "add_clip", "media": "m1", "start": 0, "duration": 10, "id": "v",
+                  "props": {"volume": 0.8}},
+                 {"op": "set_keyframes", "clip": "v", "prop": "volume", "keys": [{"t": 0, "v": 0}, {"t": 1, "v": 0.8}]}])
+    (aid,), _ = p.appliquer([{"op": "separate_audio", "clip": "v"}])
+    v, a = p.doc["clips"]["v"], p.doc["clips"][aid]
+    assert a["track"] == "A1" and a["link"] == v["link"] and v["audio_muted"] is True
+    assert a["props"]["volume"] == 0.8 and "volume" in a["keyframes"] and "volume" not in v["keyframes"]
+    with pytest.raises(OpError, match="déjà séparé"):
+        p.appliquer([{"op": "separate_audio", "clip": "v"}])
+    with pytest.raises(OpError, match="audio"):
+        p.appliquer([{"op": "add_effect", "clip": aid, "effect": "blur"}])
+    with pytest.raises(OpError):
+        p.appliquer([{"op": "update_clip", "clip": aid, "track": "V2"}])
+    # scinder l'un scinde l'autre ; les moitiés droites restent liées entre elles
+    (rv,), _ = p.appliquer([{"op": "split_clip", "clip": "v", "at": 4}])
+    droites = [c for c in p.doc["clips"].values() if c["start"] == 4]
+    assert len(droites) == 2 and droites[0]["link"] == droites[1]["link"] != v["link"]
+    # une coupe avec resserrage garde les paires cohérentes
+    p.appliquer([{"op": "cut_range", "start": 6, "end": 7}])
+    groupes = {}
+    for c in p.doc["clips"].values():
+        groupes.setdefault(c["link"], []).append((c["track"], round(c["start"], 3), round(c["duration"], 3)))
+    assert all(len(g) == 2 and g[0][1:] == g[1][1:] for g in groupes.values()), groupes
+    # dupliquer la paire dans un même lot : nouvelle paire liée, distincte de l'originale
+    r, _ = p.appliquer([{"op": "duplicate_clip", "clip": "v", "start": 20},
+                        {"op": "duplicate_clip", "clip": aid, "start": 20}])
+    assert p.doc["clips"][r[0]]["link"] == p.doc["clips"][r[1]]["link"] != v["link"]
+    p.appliquer([{"op": "unlink_clips", "clips": r}])
+    assert p.doc["clips"][r[0]]["link"] is None
+
+
+def test_sous_titres():
+    from moteur import sous_titres as st
+    assert st.joindre(["on", "n", "'a", "jamais", "vu", ",", "ça", "!"]) == "on n'a jamais vu, ça!"
+    mots = [{"w": w, "start": i * 0.4, "end": i * 0.4 + 0.3} for i, w in enumerate(
+        "En France les cas de cancer de la peau ont plus que triplé depuis 1990. Pourtant on utilise".split())]
+    caps = st.decouper(mots, max_chars=20, max_lines=2)
+    assert caps[0]["text"].count("\n") <= 1 and all(len(l) <= 20 for c in caps for l in c["text"].split("\n"))
+    assert any(c["text"].endswith("1990.") for c in caps)            # coupure en fin de phrase
+    assert all(a["end"] <= b["start"] for a, b in zip(caps, caps[1:]))  # aucun chevauchement
+    courts = st.decouper(mots, max_chars=16, max_lines=1, max_words=3)
+    assert all(len(c["text"].split()) <= 3 for c in courts)
+    p = Projet()
+    p.appliquer(st.ops(p.doc, caps, "classique"))
+    tr = st.piste(p.doc)
+    assert tr and tr["kind"] == "video" and tr is p.doc["tracks"][-1]
+    assert sum(c["track"] == tr["id"] for c in p.doc["clips"].values()) == len(caps)
+    p.appliquer(st.ops(p.doc, courts, "shorts"))                     # régénérer remplace
+    assert sum(c["track"] == tr["id"] for c in p.doc["clips"].values()) == len(courts)
+    srt = st.srt(p.doc)
+    assert srt.startswith("1\n00:00:00,000 --> ") and "-->" in srt.split("\n\n")[-1]

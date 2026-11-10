@@ -97,6 +97,13 @@ class Transaction:
         self.doc = doc
         self.fwd: list[dict] = []
         self.inv: list[dict] = []
+        self.links: dict = {}
+
+    def link_for(self, key):
+        """Même nouvel identifiant de lien pour tous les clips d'un groupe touchés dans ce lot."""
+        if key not in self.links:
+            self.links[key] = self.new_id("lk")
+        return self.links[key]
 
     def set(self, path, value):
         path = list(path)
@@ -187,11 +194,18 @@ def _effect_def(doc, name):
 
 def _clip_kind(doc, c):
     if c["type"] == "media":
-        return doc["media"][c["media"]]["kind"]
+        kind = doc["media"][c["media"]]["kind"]
+        # Le son d'une vidéo posé sur une piste audio (« son séparé ») est un clip audio.
+        tr = next((t for t in doc["tracks"] if t["id"] == c["track"]), None)
+        if kind == "video" and tr is not None and tr["kind"] == "audio":
+            return "audio"
+        return kind
     return c["type"]
 
 
-def _track_accepts(track, kind):
+def _track_accepts(track, kind, media=None):
+    if track["kind"] == "audio" and kind == "video" and media is not None and media.get("has_audio"):
+        return True
     return (track["kind"] == "audio") == (kind == "audio")
 
 
@@ -281,9 +295,10 @@ def op_add_track(tx, op):
     tid = op.get("id") or f"{prefix}{1 + sum(t['kind'] == kind for t in tx.doc['tracks'])}"
     if any(t["id"] == tid for t in tx.doc["tracks"]):
         tid = tx.new_id(prefix)
-    tracks = tx.doc["tracks"] + [{"id": tid, "kind": kind, "name": op.get("name", tid),
-                                  "hidden": False, "muted": False, "locked": False}]
-    tx.set(["tracks"], tracks)
+    track = {"id": tid, "kind": kind, "name": op.get("name", tid), "hidden": False, "muted": False, "locked": False}
+    if op.get("role"):
+        track["role"] = str(op["role"])   # ex. "subtitles" : piste des sous-titres automatiques
+    tx.set(["tracks"], tx.doc["tracks"] + [track])
     return tid
 
 
@@ -318,7 +333,7 @@ def op_add_clip(tx, op):
         track = next((t for t in doc["tracks"] if _track_accepts(t, kind)), None)
         if track is None:
             raise OpError("Aucune piste compatible : ajoute-en une avec add_track.")
-    if not _track_accepts(track, kind):
+    if not _track_accepts(track, kind, doc["media"][mid] if mid else None):
         raise OpError(f"Un clip {kind} ne va pas sur la piste {track['kind']} {track['id']}.")
     speed = _num(op.get("speed", 1.0), "speed", 0, 16, strict_lo=True)
     src_in = _num(op.get("in", 0.0), "in", 0)
@@ -408,6 +423,10 @@ def op_update_clip(tx, op):
         tx.set(base + ["color"], _hex(op["color"], "color"))
     if "name" in op:
         tx.set(base + ["name"], str(op["name"]))
+    if "link" in op:
+        tx.set(base + ["link"], None if op["link"] is None else str(op["link"]))
+    if "audio_muted" in op:
+        tx.set(base + ["audio_muted"], bool(op["audio_muted"]))
     c = doc["clips"][cid]
     if op.get("overwrite"):
         _cut(tx, c["start"], c["start"] + c["duration"], [c["track"]], ripple=False, exclude=(cid,))
@@ -430,6 +449,9 @@ def _split(tx, cid, at):
     rid = tx.new_id("c")
     right.update(id=rid, start=at, duration=c["duration"] - off, **{"in": c["in"] + off * c["speed"]})
     right["keyframes"] = {k: [{**kf, "t": kf["t"] - off} for kf in lst] for k, lst in c["keyframes"].items()}
+    if c.get("link"):
+        # Les deux moitiés droites d'une paire image + son restent liées entre elles.
+        right["link"] = tx.link_for(("split", c["link"], round(at, 4)))
     tx.set(["clips", cid, "duration"], off)
     tx.set(["clips", rid], right)
     return rid
@@ -441,7 +463,15 @@ def op_split_clip(tx, op):
     if not (c["start"] + EPS < at < c["start"] + c["duration"] - EPS):
         raise OpError(f"« at » ({at}) doit tomber à l'intérieur du clip "
                       f"[{c['start']:.3f}, {c['start'] + c['duration']:.3f}].")
-    return _split(tx, c["id"], at)
+    partners = []
+    if c.get("link") and op.get("linked", True):
+        partners = [p["id"] for p in tx.doc["clips"].values()
+                    if p["id"] != c["id"] and p.get("link") == c["link"]
+                    and p["start"] + EPS < at < p["start"] + p["duration"] - EPS]
+    rid = _split(tx, c["id"], at)
+    for pid in partners:
+        _split(tx, pid, at)
+    return rid
 
 
 def _cut(tx, start, end, tracks, ripple, exclude=()):
@@ -586,6 +616,8 @@ def op_duplicate_clip(tx, op):
     nid = op.get("id") or tx.new_id("c")
     new["id"] = nid
     new["start"] = _num(op.get("start", c["start"] + c["duration"]), "start", 0)
+    if c.get("link"):
+        new["link"] = tx.link_for(("dup", c["link"]))
     if "track" in op:
         t = _track(doc, op["track"])
         if not _track_accepts(t, _clip_kind(doc, c)):
@@ -596,6 +628,61 @@ def op_duplicate_clip(tx, op):
     tx.set(["clips", nid], new)
     _check_free(doc, doc["clips"][nid])
     return nid
+
+
+def op_separate_audio(tx, op):
+    """Sépare le son d'un clip vidéo : un clip audio lié sur une piste audio ; la vidéo devient muette."""
+    doc = tx.doc
+    c = _clip(doc, op.get("clip"))
+    m = doc["media"].get(c.get("media")) if c["type"] == "media" else None
+    if m is None or _clip_kind(doc, c) != "video":
+        raise OpError(f"{c['id']} n'est pas un clip vidéo sur une piste vidéo.")
+    if not m.get("has_audio"):
+        raise OpError(f"La vidéo {m['name']} n'a pas de son.")
+    if c.get("audio_muted"):
+        raise OpError(f"Le son de {c['id']} est déjà séparé.")
+    a, b = c["start"], c["start"] + c["duration"]
+    if "track" in op:
+        tr = _track(doc, op["track"])
+        if tr["kind"] != "audio":
+            raise OpError(f"{tr['id']} n'est pas une piste audio.")
+        tid = tr["id"]
+    else:
+        tid = next((t["id"] for t in doc["tracks"] if t["kind"] == "audio" and not t.get("locked")
+                    and not _overlaps(doc, t["id"], a, b)), None) or op_add_track(tx, {"kind": "audio"})
+    link = c.get("link") or tx.new_id("lk")
+    aid = tx.new_id("c")
+    vol_keys = c["keyframes"].get("volume")
+    audio = {"id": aid, "type": "media", "media": c["media"], "track": tid, "start": a, "duration": c["duration"],
+             "in": c["in"], "speed": c["speed"], "props": {**DEFAULT_PROPS, "volume": c["props"]["volume"]},
+             "effects": [], "keyframes": {"volume": vol_keys} if vol_keys else {},
+             "name": f"{c['name']} (son)", "link": link}
+    tx.set(["clips", aid], audio)
+    _check_free(doc, doc["clips"][aid])
+    tx.set(["clips", c["id"], "link"], link)
+    tx.set(["clips", c["id"], "audio_muted"], True)
+    if vol_keys:
+        tx.delete(["clips", c["id"], "keyframes", "volume"])
+    return aid
+
+
+def op_link_clips(tx, op):
+    ids = op.get("clips") or []
+    if len(ids) < 2:
+        raise OpError("Donne au moins deux clips à lier.")
+    link = tx.new_id("lk")
+    for i in ids:
+        _clip(tx.doc, i)
+        tx.set(["clips", i, "link"], link)
+    return link
+
+
+def op_unlink_clips(tx, op):
+    for i in op.get("clips") or []:
+        c = _clip(tx.doc, i)
+        if c.get("link"):
+            tx.set(["clips", i, "link"], None)
+    return None
 
 
 def op_ripple_delete(tx, op):
@@ -680,6 +767,7 @@ OPS = {
     "add_effect": op_add_effect, "update_effect": op_update_effect, "remove_effect": op_remove_effect,
     "set_keyframes": op_set_keyframes, "set_keyframe": op_set_keyframe, "remove_keyframe": op_remove_keyframe,
     "duplicate_clip": op_duplicate_clip, "ripple_delete": op_ripple_delete,
+    "separate_audio": op_separate_audio, "link_clips": op_link_clips, "unlink_clips": op_unlink_clips,
     "define_effect": op_define_effect, "delete_effect_def": op_delete_effect_def,
     "update_settings": op_update_settings,
 }

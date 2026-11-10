@@ -123,6 +123,11 @@ def apply_ops(ops: list[dict], label: str) -> dict:
     - split_clip {clip, at}  -> id de la partie droite
     - duplicate_clip {clip, start?, track?, overwrite?}  -> id de la copie
     - ripple_delete {clips: [ids]}  : supprime et resserre leur piste
+    - separate_audio {clip, track?}  -> id du clip audio : le son d'une vidéo passe
+        sur une piste audio, LIÉ à l'image (même champ "link"), la vidéo devient
+        muette (audio_muted). Scinder l'un scinde l'autre ; pour déplacer, rogner
+        ou supprimer une paire liée, envoie l'opération pour LES DEUX clips.
+    - link_clips {clips: [ids]} · unlink_clips {clips: [ids]}
     - cut_range {start, end, tracks?: [ids], ripple?: true}  : retire la plage
         sur les pistes (toutes par défaut) et resserre ce qui suit si ripple.
     - add_effect {clip, effect, params?, index?}  -> id de l'instance (fxN)
@@ -274,6 +279,26 @@ def text_edit(action: str, from_index: int | None = None, to_index: int | None =
     if action == "words":
         body.update({"from": from_index, "to": to_index})
     return _call("POST", "/api/text_edit", body)
+
+
+@mcp.tool()
+def generate_subtitles(style: str = "classique", max_words: int | None = None, max_chars: int | None = None,
+                       max_lines: int | None = None, start: float = 0.0, end: float | None = None,
+                       save_srt: bool = False) -> dict:
+    """Sous-titres automatiques depuis la transcription de la séquence (transcris
+    d'abord avec transcribe_media). Chaque sous-titre devient un clip texte sur la
+    piste « Sous-titres » (créée au besoin, remplacée à chaque génération) :
+    modifiable ensuite avec update_clip (texte, style) comme n'importe quel texte.
+    style : classique (bas de l'écran, fond), shorts (gros, 1 à 3 mots, apparition
+    en zoom), minimal (blanc, ombre). save_srt : écrit aussi le .srt dans exports/."""
+    body = {"style": style, "start": start, "origin": "ia"}
+    for k, v in (("max_words", max_words), ("max_chars", max_chars), ("max_lines", max_lines), ("end", end)):
+        if v is not None:
+            body[k] = v
+    r = _call("POST", "/api/subtitles", body)
+    if save_srt:
+        r["srt"] = _call("POST", "/api/subtitles/save_srt", {})["path"]
+    return r
 
 
 if __name__ == "__main__":

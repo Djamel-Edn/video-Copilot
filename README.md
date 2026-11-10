@@ -98,6 +98,30 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 - Copilote : `get_transcript`, `text_edit`, `transcribe_media`.
 - Fenêtre desktop (WebView2) : WebGL2 et connexion temps réel vérifiés.
 
+### Sous-titres automatiques (onglet Parole)
+
+- Générés depuis la transcription de la séquence : coupure en fin de phrase,
+  sur une pause ou à la longueur maximale ; « n » + « 'a » recollés en « n'a ».
+- 3 styles : **Classique** (bas de l'écran, fond, 2 lignes de 42 caractères),
+  **Shorts** (gros, majuscules, contour, 1 à 3 mots, apparition en zoom —
+  choisi d'office en séquence verticale), **Minimal** (blanc, ombre).
+- Chaque sous-titre est un **clip texte ordinaire** sur la piste
+  « Sous-titres » : texte, police, couleur, position et images clés se
+  corrigent dans l'inspecteur ; régénérer remplace la piste.
+- **Enregistrer le .srt** (dans `exports/`) pour l'envoyer à YouTube.
+- Copilote : `generate_subtitles`.
+
+### Son séparé et clips liés
+
+- Clic droit sur une vidéo (ou inspecteur, section Audio) → **Séparer le
+  son** : le son passe sur une piste audio, **lié** à l'image (🔗) ; la vidéo
+  devient muette. Les deux se sélectionnent, se déplacent, se rognent, se
+  scindent, se dupliquent et se suppriment ensemble.
+- **Alt + clic** : un seul des deux (pour décaler le son, faire un J-cut /
+  L-cut). Clic droit : délier, lier la sélection, réactiver le son.
+- Export : le son n'est jamais mixé deux fois. Une voix **mono** sort au
+  même niveau que la source (avant : −3 dB par la conversion stéréo).
+
 ## Pas encore fait
 
 | Étape | Contenu |
