@@ -84,34 +84,69 @@ def decouper(mots, max_chars=42, max_lines=2, max_words=None, max_dur=4.0, pause
     return [c for c in caps if c["end"] - c["start"] > 0.05]
 
 
+class OpsSousTitres(list):
+    """Liste d'opérations qui porte aussi le nombre de sous-titres retouchés conservés."""
+    gardes = 0
+
+
 def piste(doc):
     return next((t for t in doc["tracks"] if t.get("role") == "subtitles"), None)
 
 
-def ops(doc, caps, style="classique", replace=True, start=0.0, end=None):
-    """Opérations : piste dédiée (créée au besoin), anciens sous-titres de la plage retirés, nouveaux posés."""
+def empreinte(content, start, duration) -> dict:
+    return {"content": content, "start": round(start, 3), "duration": round(duration, 3)}
+
+
+def retouche(c) -> bool:
+    """Vrai si ce sous-titre a été posé ou modifié à la main (texte, début ou durée)."""
+    a = c.get("auto")
+    if not a or c["type"] != "text":
+        return True
+    return (c["text"]["content"] != a.get("content") or abs(c["start"] - a.get("start", -1)) > 1e-3
+            or abs(c["duration"] - a.get("duration", -1)) > 1e-3)
+
+
+def ops(doc, caps, style="classique", replace=True, start=0.0, end=None, keep_edited=True):
+    """Opérations : piste dédiée (créée au besoin), anciens sous-titres de la plage retirés, nouveaux posés.
+
+    keep_edited : un sous-titre retouché à la main (texte corrigé, recalé, scindé…) ou posé à la
+    main est conservé, et aucun nouveau sous-titre n'est posé par-dessus. Renvoie aussi, via
+    ops.gardes (attribut de la liste), le nombre de sous-titres conservés."""
     st = STYLES[style]
     W, H = doc["settings"]["width"], doc["settings"]["height"]
     k = min(W, H) / 1080
     tr = piste(doc)
-    out = []
+    out = OpsSousTitres()
+    gardes = []
     if tr is None:
         out.append({"op": "add_track", "kind": "video", "name": "Sous-titres", "role": "subtitles"})
         tid = "$0"
     else:
         tid = tr["id"]
+        # Projet d'avant les empreintes : aucun sous-titre n'en porte, on ne sait pas
+        # distinguer les retouches -> on remplace tout, comme avant.
+        ancien = not any("auto" in c for c in doc["clips"].values() if c["track"] == tid)
         if replace:
-            out += [{"op": "delete_clip", "clip": c["id"]} for c in doc["clips"].values()
-                    if c["track"] == tid and c["start"] + c["duration"] > start and (end is None or c["start"] < end)]
+            for c in doc["clips"].values():
+                if c["track"] != tid or c["start"] + c["duration"] <= start or (end is not None and c["start"] >= end):
+                    continue
+                if keep_edited and not ancien and retouche(c):
+                    gardes.append((c["start"], c["start"] + c["duration"]))
+                else:
+                    out.append({"op": "delete_clip", "clip": c["id"]})
+    out.gardes = len(gardes)
+    caps = [c for c in caps if not any(c["start"] < b and a < c["end"] for a, b in gardes)]
     text = {**st["text"]}
     for f in ("size", "padding", "stroke_width", "shadow_blur", "shadow_y", "radius"):
         if f in text:
             text[f] = round(text[f] * k, 1)
     for c in caps:
         i = len(out)
+        dur = round(c["end"] - c["start"], 3)
         out.append({"op": "add_clip", "type": "text", "track": tid, "start": c["start"],
-                    "duration": round(c["end"] - c["start"], 3), "name": c["text"].replace("\n", " ")[:40],
-                    "text": {**text, "content": c["text"]}, "props": {"y": round(st["y"] * H)}})
+                    "duration": dur, "name": c["text"].replace("\n", " ")[:40],
+                    "text": {**text, "content": c["text"]}, "props": {"y": round(st["y"] * H)},
+                    "auto": empreinte(c["text"], c["start"], dur)})
         for prop, keys in st.get("keys", {}).items():
             out.append({"op": "set_keyframes", "clip": f"${i}", "prop": prop, "keys": keys})
     return out

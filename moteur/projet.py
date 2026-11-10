@@ -369,6 +369,9 @@ def op_add_clip(tx, op):
         clip["name"] = op.get("name") or clip["text"]["content"][:30]
     if ctype == "solid":
         clip["color"] = _hex(op.get("color", "#000000"), "color")
+    if isinstance(op.get("auto"), dict):
+        # Empreinte d'un clip généré (sous-titres…) : on saura s'il a été retouché depuis.
+        clip["auto"] = {k: v for k, v in op["auto"].items() if isinstance(v, (str, int, float, bool))}
     if op.get("overwrite"):
         _cut(tx, start, start + dur, [track["id"]], ripple=False)
     tx.set(["clips", cid], clip)
@@ -820,6 +823,22 @@ def op_update_settings(tx, op):
     return None
 
 
+def op_delete_media(tx, op):
+    """Retire un média du projet (le fichier sur le disque n'est jamais touché : Ctrl+Z le rend).
+    S'il est encore utilisé, refus, sauf with_clips: true qui supprime aussi ses clips."""
+    mid = op.get("media")
+    if mid not in tx.doc["media"]:
+        raise OpError(f"Média inconnu : {mid!r}.")
+    users = [c["id"] for c in tx.doc["clips"].values() if c.get("media") == mid]
+    if users and not op.get("with_clips"):
+        raise OpError(f"Média utilisé par {len(users)} clip(s) {users} : supprime-les d'abord, "
+                      "ou passe with_clips: true.")
+    for cid in users:
+        tx.delete(["clips", cid])
+    tx.delete(["media", mid])
+    return mid
+
+
 def op_add_media(tx, op):
     m = op["media"]
     mid = m.get("id") or tx.new_id("m")
@@ -836,7 +855,7 @@ OPS = {
     "duplicate_clip": op_duplicate_clip, "ripple_delete": op_ripple_delete,
     "separate_audio": op_separate_audio, "set_transition": op_set_transition, "link_clips": op_link_clips, "unlink_clips": op_unlink_clips,
     "define_effect": op_define_effect, "delete_effect_def": op_delete_effect_def,
-    "update_settings": op_update_settings,
+    "update_settings": op_update_settings, "delete_media": op_delete_media,
 }
 INTERNAL_OPS = {**OPS, "add_media": op_add_media}
 

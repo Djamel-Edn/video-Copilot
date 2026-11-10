@@ -128,7 +128,8 @@ export class Inspecteur {
           el('button', { class: 'mini', onclick: () => app.send([{ op: 'update_clip', clip: id, audio_muted: false }], 'Réactiver le son') }, 'Réactiver')));
       }
       if (c.link) {
-        s.append(this.line('Lien', el('span', { class: 'muted small' }, '🔗 image et son liés'),
+        const n = app.group(id).length;
+        s.append(this.line('Lien', el('span', { class: 'muted small' }, n > 2 ? `🔗 groupe de ${n} clips liés` : '🔗 image et son liés'),
           el('button', { class: 'mini', onclick: () => app.send([{ op: 'unlink_clips', clips: app.group(id) }], 'Délier') }, 'Délier')));
       }
     }

@@ -1,5 +1,5 @@
 // Panneaux de gauche : Médias, Effets, Textes (préréglages), Journal ; boîte « Séquence ».
-import { el, fmtTC } from './widgets.js';
+import { el, fmtTC, contextMenu } from './widgets.js';
 import { PanneauImages } from './images.js';
 
 export const TEXT_PRESETS = {
@@ -83,9 +83,26 @@ export class Panneaux {
           el('small', {}, `${m.kind === 'image' ? 'Image' : fmtTC(m.duration, doc.settings.fps)}${m.width ? ` · ${m.width}×${m.height}` : ''} ${state}`)));
       card.addEventListener('dragstart', e => { e.dataTransfer.setData('application/x-media', m.id); e.dataTransfer.effectAllowed = 'copy'; });
       card.addEventListener('dblclick', () => app.addMedia(m.id, app.playhead));
+      card.addEventListener('contextmenu', e => { e.preventDefault(); this.mediaMenu(e, m); });
       grid.append(card);
     }
     l.append(grid);
+  }
+
+  // Clic droit sur un média : tout ce que le copilote a importé ou généré se retire d'ici.
+  mediaMenu(e, m) {
+    const app = this.app;
+    const users = Object.values(app.doc.clips).filter(c => c.media === m.id);
+    contextMenu(e.clientX, e.clientY, [
+      { label: 'Ajouter à la tête de lecture', action: () => app.addMedia(m.id, app.playhead) },
+      '-',
+      { label: users.length > 1 ? `Supprimer du projet (et ses ${users.length} clips)` : users.length ? 'Supprimer du projet (et son clip)' : 'Supprimer du projet',
+        action: () => {
+          if (users.length && !confirm(`« ${m.name} » est utilisé par ${users.length} clip(s) dans la timeline.\n`
+              + 'Les supprimer aussi ? (Ctrl+Z annule ; le fichier reste sur le disque.)')) return;
+          app.send([{ op: 'delete_media', media: m.id, with_clips: users.length > 0 }], `Supprimer le média ${m.name}`);
+        } },
+    ]);
   }
 
   effects(l) {
@@ -105,10 +122,31 @@ export class Panneaux {
           d.blend === 'replace' && d.kind !== 'transition' ? el('small', { class: 'muted' }, ' fusion') : null);
         it.addEventListener('dragstart', e => e.dataTransfer.setData('application/x-effect', d.name));
         it.addEventListener('dblclick', () => app.applyEffect(d.name, app.selection));
+        if (!d.builtin) it.addEventListener('contextmenu', e => { e.preventDefault(); this.effectMenu(e, d); });
         l.append(it);
       }
     }
-    l.append(el('p', { class: 'muted pad small' }, 'Besoin d\'un effet qui n\'existe pas ? Demande-le au copilote : il l\'écrit en direct (★).'));
+    l.append(el('p', { class: 'muted pad small' }, 'Besoin d\'un effet qui n\'existe pas ? Demande-le au copilote : il l\'écrit en direct (★). Clic droit sur un effet ★ : voir et modifier son code, ou le supprimer.'));
+  }
+
+  // Effet sur mesure (écrit par l'IA ou par toi) : il se gère ici comme le reste.
+  effectMenu(e, d) {
+    const app = this.app;
+    const uses = [];
+    for (const c of Object.values(app.doc.clips)) {
+      for (const inst of c.effects || []) if (inst.effect === d.name) uses.push({ clip: c.id, fx: inst.id });
+      if (c.trans_in?.type === d.name) uses.push({ clip: c.id, trans: true });
+    }
+    contextMenu(e.clientX, e.clientY, [
+      { label: 'Modifier le code…', action: () => editEffect(app, d) },
+      { label: uses.length ? `Supprimer l'effet (utilisé ${uses.length} fois)` : "Supprimer l'effet", action: () => {
+        if (uses.length && !confirm(`« ${d.label} » est appliqué ${uses.length} fois dans la timeline.\n`
+            + "Le retirer de ces clips et supprimer l'effet ? (Ctrl+Z annule.)")) return;
+        app.send([...uses.map(u => u.trans ? { op: 'set_transition', clip: u.clip, type: null }
+                                           : { op: 'remove_effect', clip: u.clip, fx: u.fx }),
+                  { op: 'delete_effect_def', name: d.name }], `Supprimer l'effet ${d.label}`);
+      } },
+    ]);
   }
 
   texts(l) {
@@ -184,11 +222,12 @@ export class Panneaux {
       el('div', { class: 'tr-subs-title' }, 'Sous-titres automatiques'),
       el('div', { class: 'tr-subs-row' }, style, el('span', { class: 'muted small' }, 'mots max'), words),
       el('div', { class: 'tr-subs-row' },
-        el('button', { class: 'primary', title: 'Remplace les sous-titres existants de la piste « Sous-titres »', onclick: async () => {
+        el('button', { class: 'primary', title: 'Remplace les sous-titres automatiques de la piste « Sous-titres » ; ceux que tu as retouchés ou posés à la main sont gardés', onclick: async () => {
           const body = { style: style.value };
           if (+words.value > 0) body.max_words = +words.value;
           const d = await post('/api/subtitles', body);
-          if (d) app.toast(`${d.count} sous-titres posés sur la piste « Sous-titres »`);
+          if (d) app.toast(`${d.count} sous-titres posés sur la piste « Sous-titres »`
+                           + (d.kept_edited ? ` · ${d.kept_edited} retouché${d.kept_edited > 1 ? 's' : ''} gardé${d.kept_edited > 1 ? 's' : ''}` : ''));
         } }, hasTrack ? 'Régénérer les sous-titres' : 'Générer les sous-titres'),
         el('button', { disabled: !hasTrack, title: 'Fichier .srt à envoyer à YouTube avec la vidéo', onclick: async () => {
           const d = await post('/api/subtitles/save_srt', {});
@@ -300,6 +339,44 @@ export class Panneaux {
 // ------------------------------------------------------------ boîte « Séquence »
 const PRESETS = [['1920x1080', 'HD 1080p (16:9)'], ['3840x2160', '4K UHD (16:9)'], ['1280x720', 'HD 720p (16:9)'],
                  ['1080x1920', 'Vertical 9:16 (Shorts, Reels, TikTok)'], ['1080x1080', 'Carré 1:1'], ['1080x1350', 'Portrait 4:5']];
+
+// Code d'un effet sur mesure : le même contrôle qu'à sa création (compilation avant
+// d'accepter), puis tous les clips qui l'utilisent se mettent à jour.
+export function editEffect(app, d) {
+  const modal = document.getElementById('modal');
+  const label = el('input', { class: 'wide', value: d.label });
+  const glsl = el('textarea', { class: 'code', rows: 16, spellcheck: 'false' });
+  glsl.value = d.glsl || '';
+  const params = el('textarea', { class: 'code', rows: 6, spellcheck: 'false' });
+  const sansAuto = Object.fromEntries(Object.entries(d.params || {}).filter(([k]) => !(d.kind === 'transition' && k === 'progress')));
+  params.value = JSON.stringify(sansAuto, null, 1);
+  const log = el('pre', { class: 'err' });
+  const close = () => { modal.hidden = true; modal.innerHTML = ''; };
+  const save = async () => {
+    let p;
+    try { p = JSON.parse(params.value || '{}'); } catch (err) { log.textContent = `Paramètres : JSON invalide (${err.message}).`; return; }
+    log.textContent = 'Compilation…';
+    const r = await fetch('/api/effects/define', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: d.name, label: label.value || d.name, glsl: glsl.value, params: p, kind: d.kind,
+                             blend: d.blend, description: d.description || '', origin: 'ui' }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { close(); app.toast(`Effet « ${label.value} » mis à jour`); app.forgetTextures?.(); app.dirty = true; return; }
+    // Le journal de compilation WebGL finit souvent par un caractère nul : on le retire.
+    log.textContent = [j.error || j.detail || `Erreur ${r.status}`, j.log].filter(Boolean).join('\n').replace(/\0/g, '').trim();
+  };
+  modal.append(el('div', { class: 'dialog wide' },
+    el('h3', {}, `Effet sur mesure « ${d.name} »`),
+    el('label', {}, 'Nom affiché', label),
+    el('label', {}, 'Code GLSL — vec4 effect(vec2 uv)', glsl),
+    el('label', {}, 'Paramètres (JSON : nom → {type, default, min, max, label})', params),
+    log,
+    el('div', { class: 'actions' },
+      el('button', { onclick: close }, 'Annuler'),
+      el('button', { class: 'primary', onclick: save }, 'Compiler et enregistrer'))));
+  modal.hidden = false;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  modal.querySelectorAll('input, textarea').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
+}
 
 export function openSettings(app) {
   const s = app.doc.settings, modal = document.getElementById('modal');

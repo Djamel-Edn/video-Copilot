@@ -182,8 +182,13 @@ export class Timeline {
     if (h.zone === 'transition') { app.select([c.id]); this.app.inspector.openTransition = true; return; }
     if (!app.selection.includes(c.id)) app.select(group);
     if (this.locked(c.track)) return;
-    // Rogner un clip lié rogne aussi son partenaire (sauf Alt).
-    const ids = (h.zone === 'body' ? app.selection : group).filter(id => !this.locked(app.doc.clips[id]?.track));
+    // Rogner un clip lié rogne aussi ses partenaires (sauf Alt) — seulement ceux dont le bord
+    // tombe au même endroit (à une image près) : image + son suivent ensemble, mais dans une
+    // scène liée (rendu, voix, étiquettes), l'étiquette du milieu ne bouge pas.
+    const tol = 1 / (app.doc.settings.fps || 30) + 1e-6;
+    const bord = x => h.zone === 'left' ? x.start : x.start + x.duration;
+    const aligne = id => { const o = app.doc.clips[id]; return o && Math.abs(bord(o) - bord(c)) <= tol; };
+    const ids = (h.zone === 'body' ? app.selection : group.filter(aligne)).filter(id => !this.locked(app.doc.clips[id]?.track));
     this.drag = { mode: h.zone, id: c.id, ids, x0: px, y0: py, origs: Object.fromEntries(ids.map(id => [id, { ...app.doc.clips[id] }])), preview: null };
     app.busy = true;
   }
@@ -284,7 +289,7 @@ export class Timeline {
     if (app.clipKind(c) === 'video' && m?.has_audio && !c.audio_muted) {
       linkItems.push({ label: 'Séparer le son', action: () => app.separateAudio(c.id) });
     }
-    if (c.link) linkItems.push({ label: 'Délier image et son', action: () => app.send([{ op: 'unlink_clips', clips: group }], 'Délier') });
+    if (c.link) linkItems.push({ label: group.length > 2 ? `Délier le groupe (${group.length} clips)` : 'Délier image et son', action: () => app.send([{ op: 'unlink_clips', clips: group }], 'Délier') });
     if (app.selection.length >= 2 && !c.link) {
       linkItems.push({ label: 'Lier la sélection', action: () => app.send([{ op: 'link_clips', clips: app.selection }], 'Lier') });
     }

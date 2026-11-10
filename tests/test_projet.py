@@ -346,3 +346,70 @@ def test_proxys_interrompus_repris_au_demarrage(tmp_path):
     assert sorted(a_refaire) == ["m2", "m3", "m7"]
     assert nettoyer_partiels(tmp_path) == 1
     assert not (tmp_path / "proxies" / "m2.part.mp4").exists()
+
+
+def test_supprimer_un_media():
+    p = projet_avec_media()
+    p.appliquer([{"op": "add_clip", "media": "m1", "track": "V1", "start": 0, "duration": 2},
+                 {"op": "add_clip", "media": "m1", "track": "V1", "start": 5, "duration": 2}])
+    with pytest.raises(OpError, match="utilisé par 2 clip"):
+        p.appliquer([{"op": "delete_media", "media": "m1"}])
+    assert "m1" in p.doc["media"] and len(p.doc["clips"]) == 2        # refus : rien n'a bougé
+    p.appliquer([{"op": "delete_media", "media": "m1", "with_clips": True}])
+    assert p.doc["media"] == {} and p.doc["clips"] == {}
+    p.annuler()                                                       # un seul Ctrl+Z rend tout
+    assert "m1" in p.doc["media"] and len(p.doc["clips"]) == 2
+    with pytest.raises(OpError, match="inconnu"):
+        p.appliquer([{"op": "delete_media", "media": "m9"}])
+
+
+def test_regenerer_garde_les_sous_titres_retouches():
+    from moteur import sous_titres as st
+    mots = [{"w": w, "start": i * 0.5, "end": i * 0.5 + 0.4} for i, w in enumerate(
+        "Le paradoxe de la crème solaire. Plus de protection. Plus de cancers. Voici l'enquête.".split())]
+    caps = st.decouper(mots, max_chars=18, max_lines=1)
+    p = Projet()
+    p.appliquer(st.ops(p.doc, caps, "classique"))
+    tr = st.piste(p.doc)["id"]
+    subs = sorted((c for c in p.doc["clips"].values() if c["track"] == tr), key=lambda c: c["start"])
+    assert all(not st.retouche(c) for c in subs)
+    corrige, recale = subs[0]["id"], subs[2]["id"]
+    duree_recalee = subs[2]["duration"] - 0.1
+    p.appliquer([{"op": "update_clip", "clip": corrige, "text": {"content": "Le paradoxe (corrigé)"}},
+                 {"op": "update_clip", "clip": recale, "duration": duree_recalee}])
+    ops = st.ops(p.doc, caps, "shorts")
+    assert ops.gardes == 2
+    p.appliquer(ops)
+    restants = [c for c in p.doc["clips"].values() if c["track"] == tr]
+    textes = [c["text"]["content"] for c in restants]
+    assert "Le paradoxe (corrigé)" in textes                         # la correction survit
+    assert p.doc["clips"][recale]["duration"] == pytest.approx(duree_recalee)   # le recalage survit
+    assert len(restants) == len(caps)                                 # rien posé par-dessus
+    ordre = sorted(restants, key=lambda c: c["start"])
+    assert all(a["start"] + a["duration"] <= b["start"] + 1e-6 for a, b in zip(ordre, ordre[1:]))
+    p.appliquer(st.ops(p.doc, caps, "classique", keep_edited=False))  # écraser, si demandé
+    assert "Le paradoxe (corrigé)" not in [c["text"]["content"] for c in p.doc["clips"].values()]
+
+
+def test_supprimer_un_effet_sur_mesure_utilise():
+    p = projet_avec_media()
+    p.appliquer([{"op": "define_effect", "name": "teinte", "glsl": "vec4 effect(vec2 uv){ return src(uv); }"},
+                 {"op": "add_clip", "media": "m1", "track": "V1", "start": 0, "duration": 2}])
+    cid = next(iter(p.doc["clips"]))
+    (fx,), _ = p.appliquer([{"op": "add_effect", "clip": cid, "effect": "teinte"}])
+    with pytest.raises(OpError, match="encore utilisé"):
+        p.appliquer([{"op": "delete_effect_def", "name": "teinte"}])
+    # Ce que fait le menu du panneau Effets : retirer les instances puis la définition, en un lot.
+    p.appliquer([{"op": "remove_effect", "clip": cid, "fx": fx}, {"op": "delete_effect_def", "name": "teinte"}])
+    assert "teinte" not in p.doc["effects"] and p.doc["clips"][cid]["effects"] == []
+
+
+def test_sous_titres_d_avant_les_empreintes_remplaces():
+    from moteur import sous_titres as st
+    mots = [{"w": w, "start": i * 0.5, "end": i * 0.5 + 0.4} for i, w in enumerate("Un deux trois quatre cinq six".split())]
+    caps = st.decouper(mots, max_chars=10, max_lines=1)
+    p = Projet()
+    anciens = [{k: v for k, v in o.items() if k != "auto"} for o in st.ops(p.doc, caps)]   # comme une version d'avant
+    p.appliquer(anciens)
+    ops = st.ops(p.doc, caps, "shorts")
+    assert ops.gardes == 0 and sum(o["op"] == "delete_clip" for o in ops) == len(caps)

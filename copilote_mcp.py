@@ -161,7 +161,9 @@ def apply_ops(ops: list[dict], label: str) -> dict:
     - set_keyframe {clip, prop, t, v, ease?}  : ajoute ou remplace UNE image clé
     - remove_keyframe {clip, prop, t}
     - update_settings {width?, height?, fps?, background?}
-    - delete_effect_def {name}
+    - delete_effect_def {name}  : refusé tant qu'un clip l'utilise (remove_effect d'abord)
+    - delete_media {media, with_clips?: bool}  : retire un média du projet (pas le
+        fichier) ; refusé s'il est utilisé, sauf with_clips: true (supprime ses clips).
     Chevauchement sur une même piste refusé sauf overwrite: true.
     """
     return _call("POST", "/api/ops", {"ops": ops, "label": label, "origin": "ia"})
@@ -307,14 +309,18 @@ def text_edit(action: str, from_index: int | None = None, to_index: int | None =
 @mcp.tool()
 def generate_subtitles(style: str = "classique", max_words: int | None = None, max_chars: int | None = None,
                        max_lines: int | None = None, start: float = 0.0, end: float | None = None,
-                       save_srt: bool = False) -> dict:
+                       save_srt: bool = False, keep_edited: bool = True) -> dict:
     """Sous-titres automatiques depuis la transcription de la séquence (transcris
     d'abord avec transcribe_media). Chaque sous-titre devient un clip texte sur la
-    piste « Sous-titres » (créée au besoin, remplacée à chaque génération) :
-    modifiable ensuite avec update_clip (texte, style) comme n'importe quel texte.
+    piste « Sous-titres » (créée au besoin) : modifiable ensuite avec update_clip
+    (texte, style) comme n'importe quel texte.
+    Régénérer remplace les sous-titres automatiques de la plage, MAIS garde ceux que
+    l'utilisateur a retouchés (texte corrigé, recalé, scindé) ou posés à la main, et
+    n'en pose pas de nouveaux par-dessus (kept_edited dans la réponse). keep_edited:
+    false les écrase aussi : ne le faire que si l'utilisateur le demande.
     style : classique (bas de l'écran, fond), shorts (gros, 1 à 3 mots, apparition
     en zoom), minimal (blanc, ombre). save_srt : écrit aussi le .srt dans exports/."""
-    body = {"style": style, "start": start, "origin": "ia"}
+    body = {"style": style, "start": start, "origin": "ia", "keep_edited": keep_edited}
     for k, v in (("max_words", max_words), ("max_chars", max_chars), ("max_lines", max_lines), ("end", end)):
         if v is not None:
             body[k] = v

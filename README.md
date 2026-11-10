@@ -72,6 +72,17 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   1:1, 4:5, 4K.
 - **Effets sur mesure écrits par l'IA** (shaders GLSL) : compilés dans
   l'interface avant d'être acceptés ; l'erreur revient à l'IA qui corrige.
+  Ils se gèrent aussi à la main : clic droit sur un effet ★ (onglet Effets) →
+  **Modifier le code…** (nom, GLSL, paramètres ; compilé avant d'être
+  accepté, l'erreur du compilateur s'affiche ; tous les clips qui l'utilisent
+  suivent) ou **Supprimer l'effet** (retiré des clips et des transitions qui
+  l'utilisent, en une étape annulable).
+- **Supprimer un média** : clic droit sur une vignette (onglet Médias) →
+  Supprimer du projet, avec ses clips s'il est utilisé (confirmation) ; le
+  fichier reste sur le disque et Ctrl+Z rend tout. Copilote : `delete_media`.
+- Règle : **tout ce que le copilote crée se gère dans la timeline comme un
+  geste à la main** (voir `CLAUDE.md`). Vérifié le 2026-11-10 sur une copie
+  de l'assemblage du film crème solaire (port d'essai).
 - L'IA **voit** le résultat (`snapshot`) et sait où est ta tête de lecture.
   La capture marche aussi fenêtre cachée ou réduite (0,25-0,65 s, au lieu
   d'un échec à 15 s : `requestAnimationFrame` y est suspendu), à l'image
@@ -115,7 +126,14 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   choisi d'office en séquence verticale), **Minimal** (blanc, ombre).
 - Chaque sous-titre est un **clip texte ordinaire** sur la piste
   « Sous-titres » : texte, police, couleur, position et images clés se
-  corrigent dans l'inspecteur ; régénérer remplace la piste.
+  corrigent dans l'inspecteur.
+- **Régénérer garde tes retouches** : chaque sous-titre généré porte une
+  empreinte (texte, début, durée) ; ceux que tu as corrigés, recalés, scindés
+  ou posés à la main restent, et rien n'est posé par-dessus. Mesuré : 2
+  retouches gardées en passant de Classique à Shorts (32 posés, aucun
+  chevauchement). Les projets d'avant les empreintes sont remplacés comme
+  avant. Le copilote peut forcer l'écrasement (`keep_edited: false`) si tu le
+  demandes.
 - **Enregistrer le .srt** (dans `exports/`) pour l'envoyer à YouTube.
 - Copilote : `generate_subtitles`.
 
@@ -127,6 +145,13 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   scindent, se dupliquent et se suppriment ensemble.
 - **Alt + clic** : un seul des deux (pour décaler le son, faire un J-cut /
   L-cut). Clic droit : délier, lier la sélection, réactiver le son.
+- **Groupes de plus de deux clips** (ex. une scène posée par le pont
+  `montage/outils/vers_editeur.py` : rendu, voix, étiquettes) : glisser l'un
+  déplace tout le groupe ; rogner un bord n'entraîne que les clips dont le
+  bord tombe au même endroit (à une image près) ; scinder ne coupe que ceux
+  qui passent par ce point. Vérifié : 4 clips déplacés de 2,011 s en un
+  geste ; fin du rendu rognée avec l'étiquette finale, sans toucher la voix
+  ni l'étiquette du milieu.
 - Export : le son n'est jamais mixé deux fois. Une voix **mono** sort au
   même niveau que la source (avant : −3 dB par la conversion stéréo).
 

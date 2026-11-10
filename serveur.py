@@ -479,7 +479,8 @@ def creer_app(etat: Etat) -> FastAPI:
                 return JSONResponse({"ok": False, "error": "Le shader ne compile pas.",
                                      "log": compile_info.get("log", "")}, status_code=400)
         try:
-            await etat.appliquer([{**body, "op": "define_effect"}], f"Effet « {body.get('name')} »", "ia")
+            origine = "ui" if body.get("origin") == "ui" else "ia"   # modifié à la main depuis le panneau Effets
+            await etat.appliquer([{**body, "op": "define_effect"}], f"Effet « {body.get('name')} »", origine)
         except OpError as e:
             return err(e)
         return {"ok": True, "compiled": compile_info}
@@ -810,13 +811,16 @@ def creer_app(etat: Etat) -> FastAPI:
         caps = sous_titres.decouper(mots, int(body.get("max_chars") or st["max_chars"]),
                                     int(body.get("max_lines") or st["max_lines"]),
                                     body.get("max_words") or st["max_words"])
-        try:
-            await etat.appliquer(sous_titres.ops(etat.projet.doc, caps, style, body.get("replace", True), start, end),
-                                 body.get("label") or f"Sous-titres automatiques ({len(caps)})", body.get("origin", "ui"))
-        except OpError as e:
-            return err(e)
+        ops = sous_titres.ops(etat.projet.doc, caps, style, body.get("replace", True), start, end,
+                              keep_edited=body.get("keep_edited", True))
+        poses = sum(o["op"] == "add_clip" for o in ops)
+        if ops:     # rien à faire si tout est déjà retouché à la main : pas une erreur
+            try:
+                await etat.appliquer(ops, body.get("label") or f"Sous-titres automatiques ({poses})", body.get("origin", "ui"))
+            except OpError as e:
+                return err(e)
         tr = sous_titres.piste(etat.projet.doc)
-        return {"ok": True, "count": len(caps), "track": tr["id"] if tr else None}
+        return {"ok": True, "count": poses, "kept_edited": ops.gardes, "track": tr["id"] if tr else None}
 
     @app.get("/api/subtitles.srt")
     async def subtitles_srt():

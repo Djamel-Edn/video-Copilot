@@ -13,6 +13,14 @@ Organisation décidée avec Djamel le 2026-11-10 :
   (`/api/project`, `/api/import`, `/api/ops`). Garder ces routes compatibles,
   ou mettre le pont à jour dans le même temps.
 
+## Règle de conception (Djamel, 2026-11-10)
+
+**Tout élément produit par le copilote doit être gérable directement dans la
+timeline**, comme un élément posé à la main : visible, sélectionnable,
+déplaçable, rognable, modifiable dans l'inspecteur, supprimable. Rien de ce
+que l'IA crée ne doit rester caché dans le projet ni n'être modifiable que par
+l'IA. Toute nouvelle fonction du copilote se vérifie contre cette règle.
+
 ## Défauts trouvés pendant les montages
 
 Corrigés le 2026-11-10 (détails et mesures dans le README) :
@@ -20,7 +28,15 @@ Corrigés le 2026-11-10 (détails et mesures dans le README) :
 - `snapshot` bloqué fenêtre cachée → `sources.uneImage()` n'attend plus
   indéfiniment `requestAnimationFrame`.
 
-Aucun défaut ouvert pour l'instant. En ajouter ici quand un montage en révèle.
+Mis en conformité avec la règle de conception le 2026-11-10 : suppression des
+médias, gestion des effets sur mesure depuis le panneau Effets, sous-titres
+retouchés gardés à la régénération, groupes liés de plus de deux clips.
+
+Encore ouvert : **les graphiques des rendus HyperFrames sont intégrés à une
+seule vidéo** ; titres et chiffres ne se modifient pas dans l'éditeur. Piste :
+convertir une composition en clips natifs (textes, aplats, images clés).
+Le copilote ne peut pas non plus déplacer la tête de lecture ni changer la
+sélection (il les lit seulement), ni lister les polices installées.
 
 Tester sur les ports d'essai (`.claude/launch.json` : 8771, 8773-8775), jamais
 sur le 8765 : c'est souvent l'éditeur ouvert de Djamel.
