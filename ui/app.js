@@ -98,6 +98,8 @@ class App {
       this.sendRaw({ type: 'reply', id: msg.id, ...this.renderer.tryCompile(msg.effect) });
     } else if (msg.type === 'snapshot_request') {
       this.snapshot(msg);
+    } else if (msg.type === 'images') {
+      this.panels.images.update(msg);
     } else if (msg.type === 'export_request') {
       this.toast("IA · lance l'export");
       runExport(this, msg.options || {});

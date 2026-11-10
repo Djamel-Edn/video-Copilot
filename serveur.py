@@ -14,8 +14,10 @@ import os
 import shutil
 import struct
 import subprocess
+import re
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from moteur import export as exp
-from moteur import audio, medias, sous_titres, texte
+from moteur import audio, gpu, images, medias, sous_titres, texte
 from moteur.effets import BUILTIN, CONTRAT_GLSL
 from moteur.projet import OPS, OpError, Projet, duree_totale, nouveau_document, spans
 
@@ -35,6 +37,9 @@ UI = ROOT / "ui"
 # Python qui possède faster-whisper (environnement séparé : torch, CUDA…).
 _WH = ROOT.parent / "montage" / ".voice-venv" / "Scripts" / "python.exe"
 WHISPER_PY = os.environ.get("EDITEUR_WHISPER_PY") or (str(_WH) if _WH.exists() else "")
+# Génération d'images : même environnement local par défaut (torch + diffusers + peft).
+IMAGE_PY = os.environ.get("EDITEUR_IMAGE_PY") or WHISPER_PY
+PERF_IMAGES = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "editeur" / "images_perf.json"
 UVICORN_WS = {"ws_per_message_deflate": False, "ws_max_size": 256 * 1024 * 1024}
 
 
@@ -52,6 +57,7 @@ class Etat:
         self.export: dict = {"state": "idle"}
         self.cache_mots: dict = {}
         self.proxys_a_refaire: list[str] = []
+        self.images = GenerateurImages(self)
 
     # --- persistance (écriture atomique, regroupée) ---
     def planifier_sauvegarde(self):
@@ -124,6 +130,247 @@ class Etat:
             self.attente.pop(rid, None)
 
 
+class GenerateurImages:
+    """Processus de génération persistant (modèle chargé une fois) et file de travaux.
+
+    Les états et la progression partent vers l'interface en messages « images ». Le
+    processus s'arrête après IDLE secondes sans travail pour rendre la mémoire (~4 Go)."""
+    IDLE = 300
+
+    def __init__(self, etat: "Etat"):
+        self.etat = etat
+        self.proc: asyncio.subprocess.Process | None = None
+        self.device: str | None = None
+        self.state = "off"          # off | starting | downloading | loading | ready | busy | error
+        self.detail: dict = {}
+        self.erreur: str | None = None
+        self.jobs: dict[str, dict] = {}
+        self.ordre: list[str] = []
+        self.file: asyncio.Queue | None = None
+        self.task: asyncio.Task | None = None
+        self.stderr: deque = deque(maxlen=60)
+        self.pref = "auto"
+        self.gpus = None
+        self.importer = None        # branché par creer_app
+        self.placer = None
+        self._dernier_envoi = 0.0
+
+    # --- mesures de vitesse propres à cette machine ---
+    def perf(self) -> dict:
+        try:
+            return json.loads(PERF_IMAGES.read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def noter_perf(self, device: str, v: float):
+        d = self.perf()
+        d[device] = {"v": v, "date": time.strftime("%Y-%m-%d %H:%M")}
+        PERF_IMAGES.parent.mkdir(parents=True, exist_ok=True)
+        PERF_IMAGES.write_text(json.dumps(d, indent=1), "utf-8")
+
+    def calcul(self) -> str:
+        if self.gpus is None:
+            self.gpus = gpu.detecter()
+        return images.choisir_calcul(self.pref, self.gpus, self.perf())
+
+    def status(self) -> dict:
+        if self.gpus is None:
+            self.gpus = gpu.detecter()
+        spec = images.MODELES["leger"]
+        return {"available": bool(IMAGE_PY and Path(IMAGE_PY).exists()), "state": self.state,
+                "detail": self.detail, "error": self.erreur, "device": self.device, "pref": self.pref,
+                "calcul": self.calcul(), "perf": self.perf(), "weights": images.poids_presents(),
+                "model": spec["label"], "poids_go": spec["poids_go"], "licence": spec["licence"],
+                "gpus": [{"name": g.name, "vendor": g.vendor, "vram_mo": g.vram_mo} for g in self.gpus],
+                "styles": {k: v[0] for k, v in images.STYLES.items()}, "formats": list(images.FORMATS),
+                "jobs": [self.jobs[j] for j in self.ordre[-30:]]}
+
+    async def publier(self, force=True):
+        now = time.time()
+        if not force and now - self._dernier_envoi < 0.4:
+            return
+        self._dernier_envoi = now
+        await self.etat.diffuser({"type": "images", **self.status()})
+
+    # --- travaux ---
+    def soumettre(self, req: dict, origin: str) -> dict:
+        doc = self.etat.projet.doc
+        style = req.get("style") or "illustration"
+        prompt = images.prompt_complet(req.get("prompt", ""), style)
+        aspect = req.get("aspect") or "sequence"
+        w, h = images.taille(doc, aspect)
+        qualite = req.get("quality") or "rapide"
+        if qualite not in images.QUALITES:
+            raise ValueError(f"Qualité inconnue : {qualite!r}. Possibles : {list(images.QUALITES)}.")
+        count = max(1, min(int(req.get("count") or 1), 4))
+        seed = req.get("seed")
+        if seed is not None and seed != "":
+            seed = int(seed)
+        else:
+            seed = None
+        jid = "img" + uuid.uuid4().hex[:8]
+        slug = re.sub(r"[^a-z0-9]+", "_", req["prompt"].lower())[:32].strip("_") or "image"
+        job = {"id": jid, "state": "queued", "prompt": req["prompt"].strip(), "full_prompt": prompt,
+               "negative": req.get("negative") or images.NEGATIF, "style": style, "aspect": aspect,
+               "quality": qualite, "count": count, "seed": seed, "width": w, "height": h, "origin": origin,
+               "slug": slug, "place": req.get("place"), "progress": 0.0, "media": [], "clips": [],
+               "error": None, "seconds": None, "created": time.time()}
+        est = images.estimation(self.perf(), self.calcul(), w, h, qualite, count)
+        job["estimate_s"] = round(est) if est else None
+        self.jobs[jid] = job
+        self.ordre.append(jid)
+        if self.file is None:
+            self.file = asyncio.Queue()
+        self.file.put_nowait(jid)
+        if self.task is None or self.task.done():
+            self.task = asyncio.get_running_loop().create_task(self.boucle())
+        return job
+
+    async def annuler(self, jid: str) -> bool:
+        job = self.jobs.get(jid)
+        if not job or job["state"] not in ("queued", "running"):
+            return False
+        running = job["state"] == "running"
+        job.update(state="cancelled")
+        if running:
+            await self.arreter()        # torch ne s'interrompt pas proprement : on arrête le processus
+        await self.publier()
+        return True
+
+    async def boucle(self):
+        while True:
+            try:
+                jid = await asyncio.wait_for(self.file.get(), self.IDLE)
+            except asyncio.TimeoutError:
+                await self.arreter()
+                await self.publier()
+                return
+            job = self.jobs.get(jid)
+            if not job or job["state"] != "queued":
+                continue
+            try:
+                await self.executer(job)
+            except Exception as e:
+                if job["state"] != "cancelled":
+                    job.update(state="error", error=str(e)[-600:])
+            await self.publier()
+
+    async def _lire(self) -> dict | None:
+        proc = self.proc
+        while proc is not None:
+            line = await proc.stdout.readline()
+            if not line:
+                return None
+            try:
+                return json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+        return None
+
+    async def _vider_stderr(self, proc):
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                return
+            self.stderr.append(line.decode("utf-8", "replace").rstrip())
+
+    def _erreur_proc(self, msg: str) -> str:
+        tail = [l for l in self.stderr if l and "warn" not in l.lower()][-6:]
+        return msg + ("\n" + "\n".join(tail) if tail else "")
+
+    async def assurer(self, device: str):
+        if self.proc and self.proc.returncode is None and self.device == device:
+            return
+        await self.arreter()
+        if not IMAGE_PY or not Path(IMAGE_PY).exists():
+            raise RuntimeError("Aucun Python avec torch + diffusers : définis EDITEUR_IMAGE_PY.")
+        self.state, self.detail, self.erreur = "starting", {"device": device}, None
+        await self.publier()
+        env = {**os.environ, "HF_HUB_DISABLE_SYMLINKS_WARNING": "1", "PYTHONIOENCODING": "utf-8"}
+        self.proc = await asyncio.create_subprocess_exec(
+            IMAGE_PY, str(ROOT / "outils" / "image_worker.py"), "--accel", device,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=env, creationflags=exp.NO_WINDOW, limit=1 << 20)
+        self.stderr.clear()
+        asyncio.get_running_loop().create_task(self._vider_stderr(self.proc))
+        self.state = "loading"
+        await self.publier()
+        while True:
+            ev = await self._lire()
+            if ev is None:
+                if self.proc:
+                    await self.proc.wait()
+                self.proc = None
+                self.state = "error"
+                self.erreur = self._erreur_proc("Le générateur s'est arrêté au démarrage.")
+                raise RuntimeError(self.erreur)
+            if ev["event"] == "download":
+                self.state, self.detail = "downloading", ev
+                await self.publier(force=False)
+            elif ev["event"] == "ready":
+                self.device, self.state, self.detail = ev["device"], "ready", ev
+                return
+            elif ev["event"] == "fatal":
+                await self.arreter()
+                self.state, self.erreur = "error", ev["error"]
+                raise RuntimeError(ev["error"])
+
+    async def executer(self, job: dict):
+        await self.assurer(self.calcul())
+        job["state"], job["started"], job["device"] = "running", time.time(), self.device
+        self.state = "busy"
+        await self.publier()
+        out_dir = self.etat.dossier / "media" / "ia"
+        req = {"id": job["id"], "prompt": job["full_prompt"], "negative": job["negative"],
+               "width": job["width"], "height": job["height"], "quality": job["quality"],
+               "seed": job["seed"], "count": job["count"], "out_dir": str(out_dir), "stem": job["slug"]}
+        self.proc.stdin.write((json.dumps(req) + "\n").encode())
+        await self.proc.stdin.drain()
+        while True:
+            ev = await self._lire()
+            if ev is None:
+                self.proc = None
+                self.state = "off"
+                if job["state"] == "cancelled":
+                    return
+                raise RuntimeError(self._erreur_proc("Le générateur s'est arrêté pendant le calcul."))
+            if ev.get("id") != job["id"]:
+                continue
+            if ev["event"] == "progress":
+                job["progress"] = round((ev["image"] + ev["step"] / ev["steps"]) / ev["count"] * 0.97, 3)
+                job["step"] = f"image {ev['image'] + 1}/{ev['count']} · étape {ev['step']}/{ev['steps']}"
+                await self.publier(force=False)
+            elif ev["event"] == "error":
+                self.state = "ready"
+                raise RuntimeError(ev["error"])
+            elif ev["event"] == "done":
+                self.state = "ready"
+                self.noter_perf(self.device, ev["s_par_etape_mpx"])
+                mids = []
+                for f, seed in zip(ev["files"], ev["seeds"]):
+                    meta = {"prompt": job["prompt"], "full_prompt": job["full_prompt"], "negative": job["negative"],
+                            "style": job["style"], "aspect": job["aspect"], "quality": job["quality"], "seed": seed,
+                            "model": images.MODELES["leger"]["base"], "device": self.device}
+                    mids.append(await self.importer(Path(f), meta, job["origin"]))
+                job.update(state="done", progress=1.0, media=mids, seeds=ev["seeds"], seconds=ev["seconds"])
+                if job.get("place"):
+                    job["clips"] = await self.placer(job)
+                return
+
+    async def arreter(self):
+        p, self.proc = self.proc, None
+        self.device = None
+        if p and p.returncode is None:
+            try:
+                p.stdin.write(b'{"cmd": "quit"}\n')
+                await asyncio.wait_for(p.wait(), 3)
+            except Exception:
+                p.kill()
+                await p.wait()
+        if self.state != "error":
+            self.state = "off"
+
+
 async def verifier_medias(etat: Etat):
     """Médias importés avant la gestion de la rotation : relire leurs dimensions d'affichage."""
     for mid, m in list(etat.projet.doc["media"].items()):
@@ -156,6 +403,7 @@ def creer_app(etat: Etat) -> FastAPI:
                 await proxy(mid, Path(m["path"]), m["kind"])
         asyncio.get_running_loop().create_task(demarrage())
         yield
+        await etat.images.arreter()
 
     app = FastAPI(title="editeur", lifespan=lifespan)
     origines = {f"http://127.0.0.1:{etat.port}", f"http://localhost:{etat.port}"}
@@ -236,12 +484,17 @@ def creer_app(etat: Etat) -> FastAPI:
             raise HTTPException(500, r.get("log", "rendu impossible"))
         return {"ok": True, "t": r.get("t"), "jpeg_base64": r["data"].split(",", 1)[1]}
 
-    async def importer(path: Path):
+    async def importer(path: Path, generated: dict | None = None, origin: str = "ui"):
         try:
             info = await asyncio.to_thread(medias.probe, path)
         except Exception as e:
             raise HTTPException(400, f"Lecture impossible : {e}")
-        (mid,) = await etat.appliquer([{"op": "add_media", "media": info}], f"Import {path.name}", "ui", internal=True)
+        label = f"Import {path.name}"
+        if generated:
+            info["generated"] = generated
+            info["name"] = generated["prompt"][:60]
+            label = f"Image IA : {generated['prompt'][:40]}"
+        (mid,) = await etat.appliquer([{"op": "add_media", "media": info}], label, origin, internal=True)
         if info["kind"] != "image" and not (info["kind"] == "audio" and info["browser_ok"]):
             asyncio.get_running_loop().create_task(proxy(mid, path, info["kind"]))
         return mid
@@ -253,6 +506,51 @@ def creer_app(etat: Etat) -> FastAPI:
             await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": str(dst.relative_to(etat.dossier))}])
         except Exception as e:
             await etat.systeme([{"op": "set", "path": ["media", mid, "proxy_error"], "value": str(e)[:300]}])
+
+    # ------------------------------------------------------------ images d'illustration (IA locale)
+    async def placer_images(job):
+        pl = job["place"] or {}
+        at = float(pl.get("at", etat.ui_state["playhead"]))
+        ops = images.ops_placer(etat.projet.doc, job["media"], at, float(pl.get("duration", 4.0)), pl.get("track"),
+                                bool(pl.get("zoom", True)))
+        res = await etat.appliquer(ops, f"Illustration : {job['prompt'][:40]}", job["origin"])
+        return [r for o, r in zip(ops, res) if o["op"] == "add_clip"]
+
+    etat.images.importer = importer
+    etat.images.placer = placer_images
+
+    @app.get("/api/images/status")
+    async def images_status():
+        return await asyncio.to_thread(etat.images.status)
+
+    @app.post("/api/images/generate")
+    async def images_generate(body: dict):
+        try:
+            job = etat.images.soumettre(body, body.get("origin", "ui"))
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        await etat.images.publier()
+        return {"ok": True, "job": job}
+
+    @app.get("/api/images/jobs/{jid}")
+    async def images_job(jid: str):
+        job = etat.images.jobs.get(jid)
+        if job is None:
+            raise HTTPException(404, f"Travail inconnu : {jid!r}.")
+        return job
+
+    @app.post("/api/images/cancel")
+    async def images_cancel(body: dict):
+        return {"ok": await etat.images.annuler(body.get("job", ""))}
+
+    @app.post("/api/images/settings")
+    async def images_settings(body: dict):
+        pref = body.get("device", "auto")
+        if pref not in ("auto", "cuda", "cpu"):
+            raise HTTPException(400, "device : auto, cuda ou cpu.")
+        etat.images.pref = pref
+        await etat.images.publier()
+        return {"ok": True, "calcul": etat.images.calcul()}
 
     @app.post("/api/import")
     async def import_path(body: dict):

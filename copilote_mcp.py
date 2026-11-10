@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 
 import httpx
 from mcp.server.mcpserver import Image, MCPServer
@@ -30,6 +31,11 @@ Méthode :
 4. Si aucun effet intégré ne convient (list_effects), écris-en un avec
    define_effect (shader GLSL). Si la compilation échoue, lis le log, corrige,
    recommence. Puis applique-le avec add_effect et anime-le avec set_keyframes.
+5. Pour illustrer un passage (B-roll, image d'ambiance), generate_image : prompt
+   EN ANGLAIS, concret (sujet, lieu, lumière), style adapté ; place_at pose l'image
+   sur une piste au-dessus de la vidéo avec un zoom lent. Calcul local et lent
+   (~1 min par image sur ce PC) : préviens l'utilisateur, ou lance avec
+   wait=false et continue le montage, puis image_status.
 Temps en secondes. Ne supprime jamais de contenu que l'utilisateur n'a pas
 demandé de supprimer. Si une opération est refusée, le message dit pourquoi.
 """
@@ -56,7 +62,8 @@ def _call(method, path, body=None, timeout=20.0):
 
 def _compact(doc):
     media = {m["id"]: {"name": m["name"], "kind": m["kind"], "duration": round(m["duration"], 3),
-                       **({"size": f"{m['width']}x{m['height']}"} if "width" in m else {})}
+                       **({"size": f"{m['width']}x{m['height']}"} if "width" in m else {}),
+                       **({"generated": m["generated"]["prompt"]} if m.get("generated") else {})}
              for m in doc["media"].values()}
     clips = []
     for c in sorted(doc["clips"].values(), key=lambda c: (c["track"], c["start"])):
@@ -327,6 +334,67 @@ def duck_music(clips: list[str], depth_db: float = -12.0, attack: float = 0.25, 
     voix et de la remontée après (s). Relancer remplace les images clés de volume."""
     return _call("POST", "/api/duck", {"clips": clips, "depth_db": depth_db, "attack": attack,
                                        "release": release, "origin": "ia"})
+
+
+
+def _job_result(job: dict, with_images: bool):
+    out = {k: job.get(k) for k in ("id", "state", "prompt", "full_prompt", "style", "width", "height", "seeds",
+                                   "media", "clips", "seconds", "error", "estimate_s", "progress")}
+    if not with_images or job["state"] != "done":
+        return out
+    items = [out]
+    for mid in job["media"]:
+        try:
+            r = httpx.get(f"{BASE}/media/{mid}", timeout=20)
+            items.append(Image(data=r.content, format="png"))
+        except httpx.HTTPError:
+            pass
+    return items
+
+
+@mcp.tool()
+def generate_image(prompt: str, style: str = "illustration", aspect: str = "sequence", count: int = 1,
+                   quality: str = "rapide", seed: int | None = None, negative: str | None = None,
+                   place_at: float | None = None, duration: float = 4.0, track: str | None = None,
+                   zoom: bool = True, wait: bool = True):
+    """Génère des images d'illustration EN LOCAL (DreamShaper 8 + LCM, aucun service en
+    ligne) et les ajoute aux médias du projet ; avec place_at, les pose aussi sur la
+    timeline à partir de cet instant (s), chacune `duration` secondes, sur une piste
+    vidéo libre au-dessus de la vidéo principale (créée si besoin, sous les
+    sous-titres), avec un zoom lent 102 % → 110 % si zoom=True.
+
+    prompt : en anglais, concret (« a cozy desk at night, laptop with code, warm
+    lamp light »). style : illustration, photo, cinema, 3d, plat, aquarelle, aucun.
+    aspect : sequence (défaut), 16:9, 9:16, 1:1, 4:5. quality : rapide (4 étapes)
+    ou fine (6 étapes, décodeur complet, ~2× plus long). count : 1 à 4 (graines
+    successives). seed : pour refaire exactement une image.
+    Lent sur ce PC (~1 min par image) : wait=True attend la fin (jusqu'à ~9 min) et
+    renvoie les images pour que tu les voies ; wait=False rend la main tout de
+    suite (suivre avec image_status). Ctrl+Z retire le placement, pas l'image."""
+    body = {"prompt": prompt, "style": style, "aspect": aspect, "count": count, "quality": quality,
+            "seed": seed, "negative": negative, "origin": "ia"}
+    if place_at is not None:
+        body["place"] = {"at": place_at, "duration": duration, "track": track, "zoom": zoom}
+    job = _call("POST", "/api/images/generate", body)["job"]
+    if not wait:
+        return _job_result(job, False)
+    t0 = time.time()
+    while job["state"] in ("queued", "running") and time.time() - t0 < 540:
+        time.sleep(2)
+        job = _call("GET", f"/api/images/jobs/{job['id']}")
+    return _job_result(job, True)
+
+
+@mcp.tool()
+def image_status(job: str, wait: bool = False):
+    """État d'une génération lancée par generate_image (id « img… »). wait=True
+    attend la fin (jusqu'à ~9 min). Une fois terminée, renvoie aussi les images."""
+    j = _call("GET", f"/api/images/jobs/{job}")
+    t0 = time.time()
+    while wait and j["state"] in ("queued", "running") and time.time() - t0 < 540:
+        time.sleep(2)
+        j = _call("GET", f"/api/images/jobs/{job}")
+    return _job_result(j, True)
 
 
 if __name__ == "__main__":

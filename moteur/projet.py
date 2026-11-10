@@ -298,7 +298,12 @@ def op_add_track(tx, op):
     track = {"id": tid, "kind": kind, "name": op.get("name", tid), "hidden": False, "muted": False, "locked": False}
     if op.get("role"):
         track["role"] = str(op["role"])   # ex. "subtitles" : piste des sous-titres automatiques
-    tx.set(["tracks"], tx.doc["tracks"] + [track])
+    tracks = list(tx.doc["tracks"])
+    if op.get("before") is not None:      # insérer sous une piste donnée (ex. sous les sous-titres)
+        tracks.insert(tracks.index(_track(tx.doc, op["before"])), track)
+    else:
+        tracks.append(track)
+    tx.set(["tracks"], tracks)
     return tid
 
 

@@ -1,0 +1,9 @@
+# Environnement local des modèles (transcription + images), séparé de .venv.
+# torch avec CUDA : https://pytorch.org (ex. --index-url https://download.pytorch.org/whl/cu124)
+torch
+faster-whisper
+diffusers>=0.39
+transformers
+accelerate
+peft
+safetensors

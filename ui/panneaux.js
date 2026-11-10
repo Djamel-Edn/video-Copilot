@@ -1,5 +1,6 @@
 // Panneaux de gauche : Médias, Effets, Textes (préréglages), Journal ; boîte « Séquence ».
 import { el, fmtTC } from './widgets.js';
+import { PanneauImages } from './images.js';
 
 export const TEXT_PRESETS = {
   titre: { label: 'Titre principal', desc: 'Grand, centré, apparition en fondu glissé', dur: 4,
@@ -28,6 +29,7 @@ export class Panneaux {
     this.tab = 'media';
     this.filter = '';
     this.body = document.getElementById('left-body');
+    this.images = new PanneauImages(app);
     for (const b of document.querySelectorAll('#left-tabs button')) {
       b.onclick = () => { this.tab = b.dataset.tab; this.refresh(); };
     }
@@ -53,7 +55,7 @@ export class Panneaux {
       this.body.append(el('div', { class: 'ptools' },
         el('label', { class: 'btn' }, 'Importer…', el('input', { type: 'file', multiple: true, hidden: true,
           onchange: e => this.app.upload(e.target.files) })), search));
-    } else if (this.tab !== 'journal' && this.tab !== 'transcript') this.body.append(el('div', { class: 'ptools' }, search));
+    } else if (!['journal', 'transcript', 'images'].includes(this.tab)) this.body.append(el('div', { class: 'ptools' }, search));
     this.body.append(this.list);
     this.renderList();
   }
@@ -65,7 +67,7 @@ export class Panneaux {
     if (!l) return;
     l.innerHTML = '';
     ({ media: () => this.media(l), effects: () => this.effects(l), text: () => this.texts(l), journal: () => this.journal(l),
-       transcript: () => this.transcript(l) })[this.tab]();
+       transcript: () => this.transcript(l), images: () => this.images.render(l) })[this.tab]();
   }
 
   media(l) {

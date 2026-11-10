@@ -190,3 +190,23 @@ small.err { color: #ff9aa6; }
 .tr-subs p { margin: 0; }
 .meter { width: 170px; height: 28px; }
 .fxicon.trans { color: #b9a3ff; }
+
+/* images IA */
+.img-status { padding: 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.img-status p { margin: 0; }
+.img-head b { font-size: 12px; }
+.img-form { padding: 8px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
+.img-form textarea { width: 100%; resize: vertical; font: inherit; padding: 6px; user-select: text; }
+.img-form details textarea { margin-top: 4px; }
+.img-form summary { cursor: pointer; }
+.img-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.img-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+.img-grid select, .img-grid input { width: 100%; min-width: 0; }
+.img-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.img-row select { min-width: 0; }
+.img-row .mname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+label.chk { display: flex; align-items: center; gap: 4px; font-size: 11.5px; }
+.img-jobs:not(:empty) { padding: 6px 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.img-job { display: flex; flex-direction: column; gap: 3px; }
+.img-actions { display: flex; gap: 4px; margin-top: 3px; }
+.warn { color: var(--red); }

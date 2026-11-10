@@ -268,3 +268,54 @@ def test_transitions():
     assert p.doc["effects"]["spirale"]["blend"] == "replace" and "progress" in p.doc["effects"]["spirale"]["params"]
     p.appliquer([{"op": "set_transition", "clip": r, "type": None}])
     assert "trans_in" not in p.doc["clips"][r]
+
+
+def test_images_ia_formats_calcul_et_placement():
+    from moteur import images
+    from moteur.gpu import Gpu
+    p = projet_avec_media()
+    doc = p.doc
+    # formats : multiples de 8, aire ~ constante, rapport respecté
+    for a in images.FORMATS:
+        w, h = images.taille(doc, a)
+        assert w % 8 == 0 and h % 8 == 0 and abs(w * h - 912 * 512) / (912 * 512) < 0.05
+    assert images.taille(doc, "sequence") == (912, 512)
+    w, h = images.taille(doc, "9:16")
+    assert h > w and abs(w / h - 9 / 16) < 0.01
+    with pytest.raises(ValueError):
+        images.taille(doc, "2:1")
+    assert images.prompt_complet("a desk", "photo").startswith("a desk, professional photograph")
+    assert images.prompt_complet("a desk", "aucun") == "a desk"
+    with pytest.raises(ValueError):
+        images.prompt_complet("  ", "photo")
+    # calcul : la mesure décide en auto (carte qui chauffe → processeur)
+    g = [Gpu("nvidia", "GTX 1650", 4096)]
+    perf = {"cuda": {"v": 229}, "cpu": {"v": 31}}
+    assert images.choisir_calcul("auto", g, perf) == "cpu"
+    assert images.choisir_calcul("auto", g, {"cuda": {"v": 20}, "cpu": {"v": 31}}) == "cuda"
+    assert images.choisir_calcul("auto", g, {}) == "cuda"
+    assert images.choisir_calcul("cuda", g, perf) == "cuda"
+    assert images.choisir_calcul("auto", [Gpu("nvidia", "GT 710", 2048)], {}) == "cpu"
+    assert images.estimation(perf, "cpu", 912, 512) == pytest.approx(31 * 4 * 0.466944 + 2)
+    # placement : V2 libre → dessus, avec zoom lent ; les ops passent la validation
+    p.appliquer([{"op": "add_media", "media": {"id": "g1", "name": "ia", "path": "ia.png", "kind": "image",
+                                               "duration": 0.0, "width": 912, "height": 512, "proxy": None}},
+                 {"op": "add_media", "media": {"id": "g2", "name": "ia2", "path": "ia2.png", "kind": "image",
+                                               "duration": 0.0, "width": 912, "height": 512, "proxy": None}}],
+                internal=True)
+    p.appliquer([{"op": "add_clip", "media": "m1", "start": 0, "duration": 20}])
+    ops = images.ops_placer(doc, ["g1", "g2"], 3.0, 4.0)
+    res, _ = p.appliquer(ops)
+    clips = [doc["clips"][r] for o, r in zip(ops, res) if o["op"] == "add_clip"]
+    assert [(c["track"], c["start"], c["duration"]) for c in clips] == [("V2", 3.0, 4.0), ("V2", 7.0, 4.0)]
+    assert clips[0]["keyframes"]["scale"][0]["v"] == 1.02 and clips[0]["keyframes"]["scale"][-1]["v"] == 1.1
+    # plus de piste libre : nouvelle piste insérée SOUS les sous-titres
+    p.appliquer([{"op": "add_track", "kind": "video", "name": "Sous-titres", "role": "subtitles"}])
+    for t in ("V2", "V3"):
+        p.appliquer([{"op": "add_clip", "type": "solid", "track": t, "start": 0, "duration": 20, "overwrite": True}])
+    ops = images.ops_placer(doc, ["g1"], 5.0, 2.0, zoom=False)
+    res, _ = p.appliquer(ops)
+    ids = [t["id"] for t in doc["tracks"]]
+    new = doc["clips"][res[1]]["track"]
+    subs = next(t["id"] for t in doc["tracks"] if t.get("role") == "subtitles")
+    assert ids.index(new) == ids.index(subs) - 1 and not doc["clips"][res[1]]["keyframes"]

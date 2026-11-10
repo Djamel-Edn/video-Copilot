@@ -152,31 +152,55 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 - Vérifié à l'export : au milieu d'un fondu enchaîné, l'image correspond au
   mélange 50/50 attendu (33 dB, contre 10 dB pour chaque source seule).
 
+### Images d'illustration générées en local (onglet Images)
+
+- Décrire l'image (en anglais : le modèle comprend mal le français), choisir un
+  style (illustration, photo, cinéma, 3D, plat, aquarelle), un format (celui de
+  la séquence par défaut), la qualité, le nombre (1 à 4) et, au besoin, une
+  graine pour refaire exactement la même image. **Ctrl+Entrée** génère.
+- L'image arrive dans Médias et dans la galerie de l'onglet (glisser sur la
+  timeline, double-clic, *Variante*, *Reprendre les réglages*). *Poser à la tête
+  de lecture* la place sur une piste libre au-dessus de la vidéo, sous les
+  sous-titres, avec un zoom lent 102 % → 110 %.
+- Copilote : `generate_image` (avec `place_at` pour illustrer un passage) et
+  `image_status`. Ctrl+Z retire le placement, l'image reste dans les médias.
+- Modèle : **DreamShaper 8 + LCM** (4 étapes, 912×512 en 16:9, licence
+  CreativeML OpenRAIL-M : usage commercial des images permis), décodeur compact
+  TAESD (MIT) en qualité *Rapide*. 2,3 Go de poids, téléchargés au premier
+  lancement dans le cache Hugging Face. Rien ne part en ligne.
+- Environnement : celui de la transcription (`montage/.voice-venv`, torch CUDA
+  + diffusers + peft), ou `EDITEUR_IMAGE_PY`. Paquets : `requirements-ia.txt`.
+- **Carte graphique ou processeur** : choisis automatiquement d'après la
+  vitesse mesurée sur la machine (`%LOCALAPPDATA%/editeur/images_perf.json`),
+  ou à la main dans l'onglet.
+- Mesuré le 2026-11-10 sur ce PC : **~1 min par image sur le processeur**
+  (i5-11400H). La GTX 1650 est à 91 °C et se bride à 300 MHz : ~4 min par image,
+  7× plus lente que le processeur. Une carte qui ne chauffe pas serait plusieurs
+  fois plus rapide que le processeur.
+- Pièges vus : sur GTX 16xx, le décodeur d'image en demi-précision donne une
+  image noire (NaN) → décodeur en pleine précision ; le générateur reste chargé
+  entre deux images et s'arrête après 5 min sans travail (rend ~4 Go de mémoire).
+
 ## Pas encore fait
 
 | Étape | Contenu |
 | --- | --- |
 | Export plus rapide | Lecture asynchrone des pixels, lots d'images ; objectif ≥ 15 images/s |
-| Images d'illustration IA locale | Détection du GPU faite (`moteur/gpu.py`) ; génération à brancher, voir ci-dessous |
+| Images : grands modèles | SDXL Lightning (≥ 7,5 Go) et FLUX schnell (≥ 15 Go) détectés par `moteur/gpu.py` mais pas branchés ; agrandissement ×2 |
 | Audio avancé | Égaliseur, compresseur, fondus croisés audio aux transitions |
 | Paquet installable | Un `.exe` (PyInstaller) pour ne plus passer par le terminal |
 
-## Images d'illustration générées en local
+Choix des modèles d'images selon la carte (`python -m moteur.gpu`) — seul le
+niveau léger est branché aujourd'hui :
 
-`python -m moteur.gpu` détecte la carte et choisit le modèle :
+| Mémoire vidéo | Modèle | Licence |
+| --- | --- | --- |
+| ≥ 15 Go (NVIDIA) | FLUX.1 schnell | Apache-2.0 |
+| 7,5-15 Go | SDXL + Lightning 4 étapes | OpenRAIL++-M |
+| 3,5-7,5 Go, AMD, processeur | **DreamShaper 8 + LCM 4 étapes** (branché) | OpenRAIL-M |
 
-| Mémoire vidéo | Modèle | Résolution | Licence |
-| --- | --- | --- | --- |
-| ≥ 15 Go (NVIDIA) | FLUX.1 schnell | 1024 px | Apache-2.0 |
-| 7,5-15 Go | SDXL + Lightning 4 étapes | 1024 px | OpenRAIL++-M |
-| 3,5-7,5 Go | SD 1.5 + LCM 4 étapes | 512-768 px | OpenRAIL-M |
-| AMD | SD 1.5 + LCM, DirectML | 512-768 px | OpenRAIL-M |
-| Rien de compatible | SD 1.5 + LCM sur processeur, lent | 512 px | OpenRAIL-M |
-
-Ton PC (GTX 1650 Max-Q, 4 Go) → niveau **léger**, environ 2,5 Go de poids à
-télécharger. Les temps par image indiqués dans `gpu.py` sont des estimations,
-à mesurer. Les modèles « Turbo » de Stability AI sont exclus : leur licence
-interdit l'usage commercial, donc les vidéos monétisées.
+Les modèles « Turbo » de Stability AI sont exclus : leur licence interdit
+l'usage commercial, donc les vidéos monétisées.
 
 ## Tests
 

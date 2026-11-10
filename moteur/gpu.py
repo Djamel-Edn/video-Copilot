@@ -66,13 +66,13 @@ TIERS = [
                    "Meilleure qualité et texte lisible dans l'image ; ~5-15 s par image.")),
     (7_500, Choix("moyen", "stabilityai/stable-diffusion-xl-base-1.0 + ByteDance/SDXL-Lightning (4 étapes)", "cuda",
                   1024, 4, "CreativeML OpenRAIL++-M", 7.0, "Bonne qualité 1024 px ; ~3-8 s par image.")),
-    (3_500, Choix("léger", "stable-diffusion-v1-5/stable-diffusion-v1-5 + latent-consistency/lcm-lora-sdv1-5", "cuda",
-                  768, 4, "CreativeML OpenRAIL-M", 2.5,
-                  "Tient dans 4 Go en demi-précision ; 512-768 px, ~3-6 s par image ; agrandir ensuite si besoin.")),
+    (3_500, Choix("léger", "Lykon/dreamshaper-8 + latent-consistency/lcm-lora-sdv1-5", "cuda",
+                  912, 4, "CreativeML OpenRAIL-M", 2.3,
+                  "Seul niveau branché (moteur/images.py). Tient dans 4 Go (VAE en fp32 : NaN en fp16 sur GTX 16xx).")),
 ]
 
-CPU = Choix("processeur", "stable-diffusion-v1-5/stable-diffusion-v1-5 + latent-consistency/lcm-lora-sdv1-5", "cpu",
-            512, 4, "CreativeML OpenRAIL-M", 2.5, "Sans carte compatible : lent (~30-90 s par image), mais possible.")
+CPU = Choix("processeur", "Lykon/dreamshaper-8 + latent-consistency/lcm-lora-sdv1-5", "cpu",
+            912, 4, "CreativeML OpenRAIL-M", 2.3, "Sans carte compatible : ~1 min par image (i5-11400H mesuré).")
 
 
 def choisir(gpus: list[Gpu]) -> Choix:
