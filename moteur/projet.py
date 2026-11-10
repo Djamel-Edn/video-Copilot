@@ -449,6 +449,7 @@ def _split(tx, cid, at):
     rid = tx.new_id("c")
     right.update(id=rid, start=at, duration=c["duration"] - off, **{"in": c["in"] + off * c["speed"]})
     right["keyframes"] = {k: [{**kf, "t": kf["t"] - off} for kf in lst] for k, lst in c["keyframes"].items()}
+    right.pop("trans_in", None)
     if c.get("link"):
         # Les deux moitiés droites d'une paire image + son restent liées entre elles.
         right["link"] = tx.link_for(("split", c["link"], round(at, 4)))
@@ -520,7 +521,8 @@ def op_add_effect(tx, op):
     if _clip_kind(tx.doc, c) == "audio":
         raise OpError("Les effets visuels ne s'appliquent pas à un clip audio.")
     name = op.get("effect")
-    _effect_def(tx.doc, name)
+    if _effect_def(tx.doc, name).get("kind") == "transition":
+        raise OpError(f"{name!r} est une transition : pose-la avec set_transition sur le clip qui entre.")
     fid = op.get("id") or tx.new_id("fx")
     if any(e["id"] == fid for e in c["effects"]):
         raise OpError(f"L'effet {fid!r} existe déjà sur {c['id']}.")
@@ -666,6 +668,58 @@ def op_separate_audio(tx, op):
     return aid
 
 
+def voisin_gauche(doc, c):
+    """Clip de la même piste qui finit exactement là où celui-ci commence."""
+    return next((o for o in doc["clips"].values() if o["track"] == c["track"] and o["id"] != c["id"]
+                 and abs(o["start"] + o["duration"] - c["start"]) < 1e-3), None)
+
+
+def spans(doc):
+    """Intervalle réellement affiché de chaque clip : sa durée, plus les demi-transitions
+    qui le prolongent dans la marge de sa source (avant son début, après sa fin)."""
+    par_piste = {}
+    for c in doc["clips"].values():
+        par_piste.setdefault(c["track"], []).append(c)
+    out = {}
+    for clips in par_piste.values():
+        clips.sort(key=lambda c: c["start"])
+        for c in clips:
+            out[c["id"]] = [c["start"], c["start"] + c["duration"]]
+        for a, b in zip(clips, clips[1:]):
+            t = b.get("trans_in")
+            if t and abs(a["start"] + a["duration"] - b["start"]) < 1e-3:
+                h = t["duration"] / 2
+                out[a["id"]][1] += h
+                out[b["id"]][0] -= h
+    return out
+
+
+def op_set_transition(tx, op):
+    """Transition entre un clip et celui qui le précède sur la même piste (posée sur le clip qui entre)."""
+    doc = tx.doc
+    c = _clip(doc, op.get("clip"))
+    kind = op.get("type")
+    if kind is None:
+        tx.delete(["clips", c["id"], "trans_in"])
+        return c["id"]
+    d = _effect_def(doc, kind)
+    if d.get("kind") != "transition":
+        raise OpError(f"{kind!r} n'est pas une transition. Transitions : "
+                      f"{sorted(k for k, v in {**BUILTIN, **doc['effects']}.items() if v.get('kind') == 'transition')}.")
+    left = voisin_gauche(doc, c)
+    if left is None:
+        raise OpError(f"Aucun clip ne finit juste avant {c['id']} sur la piste {c['track']} : "
+                      "une transition relie deux clips qui se touchent.")
+    dur = _num(op.get("duration", 0.5), "duration", 0, strict_lo=True)
+    maxi = min(left["duration"], c["duration"])
+    if dur > maxi + EPS:
+        raise OpError(f"Durée trop longue : au plus {maxi:.2f} s (le plus court des deux clips).")
+    base = (c.get("trans_in") or {}).get("params") if (c.get("trans_in") or {}).get("type") == kind else None
+    params = {k: v for k, v in _params(doc, kind, op.get("params"), base=base).items() if k != "progress"}
+    tx.set(["clips", c["id"], "trans_in"], {"type": kind, "duration": dur, "params": params})
+    return c["id"]
+
+
 def op_link_clips(tx, op):
     ids = op.get("clips") or []
     if len(ids) < 2:
@@ -721,11 +775,19 @@ def op_define_effect(tx, op):
                           "label": str(p.get("label", pn))}
         else:
             raise OpError(f"Type de paramètre {ptype!r} : float ou color.")
+    kind = op.get("kind", "effect")
+    if kind not in ("effect", "transition"):
+        raise OpError("kind : effect ou transition.")
     blend = op.get("blend", "over")
+    if kind == "transition":
+        blend = "replace"
+        params.setdefault("progress", {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0,
+                                       "label": "Progression (automatique)"})
     if blend not in ("over", "replace"):
         raise OpError("blend : over ou replace.")
     tx.set(["effects", name], {"name": name, "label": str(op.get("label", name)), "params": params,
-                               "glsl": glsl, "blend": blend, "builtin": False,
+                               "glsl": glsl, "blend": blend, "builtin": False, "kind": kind,
+                               "category": "Transitions" if kind == "transition" else "Sur mesure",
                                "description": str(op.get("description", ""))})
     return name
 
@@ -767,7 +829,7 @@ OPS = {
     "add_effect": op_add_effect, "update_effect": op_update_effect, "remove_effect": op_remove_effect,
     "set_keyframes": op_set_keyframes, "set_keyframe": op_set_keyframe, "remove_keyframe": op_remove_keyframe,
     "duplicate_clip": op_duplicate_clip, "ripple_delete": op_ripple_delete,
-    "separate_audio": op_separate_audio, "link_clips": op_link_clips, "unlink_clips": op_unlink_clips,
+    "separate_audio": op_separate_audio, "set_transition": op_set_transition, "link_clips": op_link_clips, "unlink_clips": op_unlink_clips,
     "define_effect": op_define_effect, "delete_effect_def": op_delete_effect_def,
     "update_settings": op_update_settings,
 }

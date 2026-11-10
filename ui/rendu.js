@@ -97,6 +97,36 @@ export function evalKey(keys, t, base) {
   return last.v;
 }
 
+// Intervalle affiché de chaque clip (même règle que moteur/projet.py : spans) : une
+// transition prolonge de sa demi-durée le clip qui sort et le clip qui entre.
+export function spansOf(doc) {
+  const out = {}, byTrack = {};
+  for (const c of Object.values(doc.clips)) {
+    out[c.id] = [c.start, c.start + c.duration];
+    (byTrack[c.track] ||= []).push(c);
+  }
+  for (const cs of Object.values(byTrack)) {
+    cs.sort((a, b) => a.start - b.start);
+    for (let i = 0; i + 1 < cs.length; i++) {
+      const a = cs[i], b = cs[i + 1], tr = b.trans_in;
+      if (tr && Math.abs(a.start + a.duration - b.start) < 1e-3) {
+        out[a.id][1] += tr.duration / 2;
+        out[b.id][0] -= tr.duration / 2;
+      }
+    }
+  }
+  return out;
+}
+
+// Progression (0 → 1) de la transition d'entrée d'un clip à l'instant t, ou null.
+export function transitionAt(clip, sp, t) {
+  const tr = clip.trans_in;
+  if (!tr || !sp || sp[0] >= clip.start - 1e-6) return null;   // pas de voisin : inactive
+  const a = clip.start - tr.duration / 2;
+  if (t < a || t >= clip.start + tr.duration / 2) return null;
+  return Math.min(1, Math.max(0, (t - a) / tr.duration));
+}
+
 export function clipProps(clip, lt) {
   const out = {};
   for (const [k, v] of Object.entries(clip.props)) out[k] = evalKey(clip.keyframes[k], lt, v);
@@ -303,7 +333,7 @@ export class Rendu {
   }
 
   // doc : projet ; t : temps timeline ; sources(clip) → {el, w, h, key, dynamic} | null ; defs : effets
-  render(doc, t, sources, defs) {
+  render(doc, t, sources, defs, sp = spansOf(doc)) {
     const gl = this.gl;
     const W = doc.settings.width, H = doc.settings.height;
     const rw = this.canvas.width, rh = this.canvas.height;
@@ -320,7 +350,7 @@ export class Rendu {
     for (const track of doc.tracks) {
       if (track.kind !== 'video' || track.hidden) continue;
       const clips = Object.values(doc.clips)
-        .filter(c => c.track === track.id && c.start <= t && t < c.start + c.duration)
+        .filter(c => c.track === track.id && sp[c.id] && sp[c.id][0] <= t && t < sp[c.id][1])
         .sort((a, b) => a.start - b.start);
       for (const clip of clips) {
         const src = sources(clip);
@@ -372,6 +402,32 @@ export class Rendu {
           this.draw(T.layer[1 - li].fb);
           li = 1 - li;
           if (def.blend === 'replace') replace = true;
+        }
+        // 2 bis. transition d'entrée : mélange ce clip (src) avec l'image qui contient le clip sortant (below)
+        const prog = transitionAt(clip, sp[clip.id], t);
+        const tdef = prog !== null ? defs[clip.trans_in.type] : null;
+        if (tdef) {
+          const fx = this.getFx(tdef);
+          if (!fx.error) {
+            const { p, loc } = fx.prog;
+            gl.useProgram(p);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, T.layer[1 - li].fb);
+            gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+            this.bindTex(0, T.layer[li].tex, loc.u_src);
+            this.bindTex(1, T.out[cur].tex, loc.u_below);
+            if (loc.u_res) gl.uniform2f(loc.u_res, W, H);
+            if (loc.u_time) gl.uniform1f(loc.u_time, lt);
+            if (loc.u_dur) gl.uniform1f(loc.u_dur, clip.trans_in.duration);
+            for (const [name, pd] of Object.entries(tdef.params || {})) {
+              const l = loc['p_' + name];
+              if (!l) continue;
+              const v = name === 'progress' ? prog : (clip.trans_in.params?.[name] ?? pd.default);
+              if (pd.type === 'color') gl.uniform3fv(l, v); else gl.uniform1f(l, v);
+            }
+            this.draw(T.layer[1 - li].fb);
+            li = 1 - li;
+            replace = true;
+          }
         }
         // 3. composition
         const op = Math.max(0, Math.min(1, pr.opacity));

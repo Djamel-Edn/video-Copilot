@@ -32,6 +32,7 @@ export class Sources {
       el.playsInline = true;
       el.src = url;
       for (const ev of ['seeked', 'loadeddata', 'canplay']) el.addEventListener(ev, () => this.onFrame());
+      this.onElement?.(el);
       v = { el, url };
       this.videos.set(clip.id, v);
     }
@@ -50,7 +51,7 @@ export class Sources {
   }
 
   // Aligne chaque élément vidéo/audio sur la tête de lecture.
-  sync(doc, t, playing) {
+  sync(doc, t, playing, sp = null) {
     const fps = doc.settings.fps;
     const live = new Set();
     for (const clip of Object.values(doc.clips)) {
@@ -59,20 +60,31 @@ export class Sources {
       if (!this.usable(m) || m.kind === 'image') continue;
       const track = doc.tracks.find(tr => tr.id === clip.track);
       const end = clip.start + clip.duration;
-      if (t < clip.start - PRELOAD - KEEP || t > end + KEEP) continue;
+      const [sa, sb] = sp?.[clip.id] || [clip.start, end];
+      if (t < sa - PRELOAD - KEEP || t > sb + KEEP) continue;
       live.add(clip.id);
       const el = this.video(clip, m);
-      const active = clip.start <= t && t < end;
+      const active = sa <= t && t < sb;
+      const dur = m.duration || Infinity;
+      const clampT = x => Math.min(Math.max(x, 0), Math.max(0, dur - 0.04));
       if (!active) {
         if (!el.paused) el.pause();
-        if (t < clip.start && t > clip.start - PRELOAD && Math.abs(el.currentTime - clip.in) > 0.05) el.currentTime = clip.in;
+        const first = clampT(this.target(clip, sa));
+        if (t < sa && t > sa - PRELOAD && Math.abs(el.currentTime - first) > 0.05) el.currentTime = first;
         continue;
       }
       const tgt = this.target(clip, t);
+      // Hors de la source (marge de transition insuffisante) : image figée sur le bord.
+      const frozen = tgt < 0 || tgt > dur - 0.04;
       const vol = clipProps(clip, t - clip.start).volume;
       el.volume = Math.max(0, Math.min(1, vol));
-      el.muted = !!track?.muted || vol <= 0 || !!clip.audio_muted;
-      if (playing) {
+      // La partie prolongée par une transition est muette (à l'export, le son coupe net).
+      const own = clip.start <= t && t < end;
+      el.muted = !!track?.muted || vol <= 0 || !!clip.audio_muted || !own;
+      if (frozen) {
+        if (!el.paused) el.pause();
+        if (Math.abs(el.currentTime - clampT(tgt)) > 0.5 / fps && !el.seeking) el.currentTime = clampT(tgt);
+      } else if (playing) {
         if (Math.abs(el.playbackRate - clip.speed) > 1e-3) el.playbackRate = clip.speed;
         if (el.paused) { el.currentTime = tgt; el.play().catch(() => {}); }
         else if (Math.abs(el.currentTime - tgt) > 0.25) el.currentTime = tgt;
@@ -89,16 +101,19 @@ export class Sources {
   }
 
   // Attend que toutes les vidéos actives aient décodé l'image demandée.
-  async ready(doc, t, timeout = 4000) {
+  async ready(doc, t, timeout = 4000, sp = null) {
     const t0 = performance.now();
     while (performance.now() - t0 < timeout) {
-      this.sync(doc, t, false);
+      this.sync(doc, t, false, sp);
       let ok = true;
       for (const clip of Object.values(doc.clips)) {
-        if (!(clip.start <= t && t < clip.start + clip.duration)) continue;
+        const [sa, sb] = sp?.[clip.id] || [clip.start, clip.start + clip.duration];
+        if (!(sa <= t && t < sb)) continue;
         const v = this.videos.get(clip.id);
         if (!v) continue;
-        if (v.el.seeking || v.el.readyState < 2 || Math.abs(v.el.currentTime - this.target(clip, t)) > 0.06) ok = false;
+        const m = doc.media[clip.media], dur = m?.duration || Infinity;
+        const want = Math.min(Math.max(this.target(clip, t), 0), Math.max(0, dur - 0.04));
+        if (v.el.seeking || v.el.readyState < 2 || Math.abs(v.el.currentTime - want) > 0.06) ok = false;
       }
       if (ok) { await new Promise(r => requestAnimationFrame(r)); return true; }
       await new Promise(r => setTimeout(r, 30));

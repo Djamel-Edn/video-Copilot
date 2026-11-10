@@ -1,9 +1,10 @@
 // Application : connexion temps réel, état, boucle de rendu, actions, raccourcis.
-import { Rendu } from './rendu.js';
+import { Rendu, spansOf } from './rendu.js';
 import { Sources } from './sources.js';
 import { Timeline } from './timeline.js';
 import { Inspecteur } from './inspecteur.js';
 import { Moniteur } from './moniteur.js';
+import { Mixeur } from './audio.js';
 import { Panneaux, TEXT_PRESETS, openSettings } from './panneaux.js';
 import { el } from './widgets.js';
 import { openExport, runExport } from './export.js';
@@ -30,6 +31,8 @@ class App {
     this.transcriptPaths = new Map();
     this.renderer = new Rendu($('#preview'));
     this.sources = new Sources(() => { this.dirty = true; });
+    this.mixer = new Mixeur();
+    this.sources.onElement = el => this.mixer.attach(el);
     this.timeline = new Timeline($('#timeline'), this);
     this.inspector = new Inspecteur($('#inspector'), this);
     this.monitor = new Moniteur(this);
@@ -105,7 +108,7 @@ class App {
     try {
       this.pause();
       this.playhead = Math.max(0, msg.t);
-      await this.sources.ready(this.doc, this.playhead);
+      await this.sources.ready(this.doc, this.playhead, 4000, this.spans());
       this.draw();
       const W = this.doc.settings.width, H = this.doc.settings.height;
       const c = document.createElement('canvas');
@@ -119,6 +122,7 @@ class App {
   }
 
   refreshAll(panels = true) {
+    this._spans = null;
     this.dirty = true;
     this.timeline.dirty = true;
     this.forgetTextures();
@@ -134,6 +138,8 @@ class App {
   }
 
   defs() { return { ...this.builtin, ...(this.doc?.effects || {}) }; }
+
+  spans() { return (this._spans ||= spansOf(this.doc)); }
 
   // Le son d'une vidéo posé sur une piste audio se comporte comme un clip audio.
   clipKind(c) {
@@ -156,6 +162,15 @@ class App {
   oneByLink(ids) {
     const seen = new Set();
     return ids.filter(id => { const l = this.doc.clips[id]?.link; if (!l) return true; if (seen.has(l)) return false; seen.add(l); return true; });
+  }
+
+  // Baisse la ou les musiques pendant la voix (images clés de volume écrites par le serveur).
+  async duckMusic(ids) {
+    const r = await fetch('/api/duck', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ clips: ids }) });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) { this.toast(d.detail || d.error || 'Échec', true); return; }
+    this.toast(`Musique baissée sous la voix (${d.zones} zone${d.zones > 1 ? 's' : ''}, d'après la ${d.source})`);
   }
 
   async separateAudio(id) {
@@ -202,6 +217,7 @@ class App {
   play() {
     if (!this.doc) return;
     if (this.playhead >= this.duration() - 1e-3) this.playhead = 0;
+    this.mixer.start();
     this.playing = true; this.playT0 = this.playhead; this.playW0 = performance.now();
     this.pushState();
   }
@@ -238,7 +254,7 @@ class App {
         if (this.playhead >= this.duration()) { this.playhead = this.duration(); this.pause(); }
         this.timeline.follow();
       }
-      this.sources.sync(this.doc, this.playhead, this.playing);
+      this.sources.sync(this.doc, this.playhead, this.playing, this.spans());
       const changed = this.dirty || this.playing || this.playhead !== this._lastT;
       if (this.playing || this.dirty) this.draw();
       if (changed) {
@@ -248,6 +264,15 @@ class App {
         if (!this.monitor.drag) this.monitor.drawOverlay();
         this.monitor.update();
       }
+      if (this.playing) {
+        this.monitor.drawMeter(this.mixer.read());
+        this._meterLive = true;
+      } else if (this._meterLive) {
+        // À l'arrêt, les vu-mètres retombent et la mesure LUFS repart de zéro.
+        this.monitor.drawMeter(null);
+        this.mixer.reset();
+        this._meterLive = false;
+      }
       this.timeline.draw();
     }
     requestAnimationFrame(t => this.tick(t));
@@ -255,7 +280,7 @@ class App {
 
   draw() {
     this.dirty = false;
-    this.renderer.render(this.doc, this.playhead, c => this.sources.get(this.doc, c), this.defs());
+    this.renderer.render(this.doc, this.playhead, c => this.sources.get(this.doc, c), this.defs(), this.spans());
   }
 
   // ------------------------------------------------------------ actions
@@ -305,7 +330,29 @@ class App {
     if (r) this.select([r[ci]]);
   }
 
+  neighbor(c, dir) {
+    return Object.values(this.doc.clips).find(o => o.track === c.track && o.id !== c.id &&
+      (dir < 0 ? Math.abs(o.start + o.duration - c.start) < 1e-3 : Math.abs(o.start - (c.start + c.duration)) < 1e-3)) || null;
+  }
+
+  // Pose une transition au début du clip (ou à sa fin si atEnd) : elle relie deux clips qui se touchent.
+  applyTransition(name, id, atEnd = false) {
+    const c = this.doc.clips[id];
+    if (!c) return;
+    const target = atEnd ? this.neighbor(c, 1) : (this.neighbor(c, -1) ? c : this.neighbor(c, 1));
+    const left = target && this.neighbor(target, -1);
+    if (!target || !left) { this.toast('Une transition se pose entre deux clips qui se touchent sur la même piste.', true); return; }
+    const d = Math.min(0.5, left.duration, target.duration);
+    this.send([{ op: 'set_transition', clip: target.id, type: name, duration: +d.toFixed(3) }],
+              `Transition : ${this.defs()[name]?.label || name}`).then(r => { if (r) this.select([target.id]); });
+  }
+
   applyEffect(name, ids) {
+    if (this.defs()[name]?.kind === 'transition') {
+      if (!ids.length) { this.toast('Sélectionne le clip qui entre, ou glisse la transition sur un point de coupe.', true); return; }
+      this.applyTransition(name, ids[0]);
+      return;
+    }
     const ok = ids.filter(id => {
       const c = this.doc.clips[id];
       return c && this.clipKind(c) !== 'audio';

@@ -220,3 +220,51 @@ def test_sous_titres():
     assert sum(c["track"] == tr["id"] for c in p.doc["clips"].values()) == len(courts)
     srt = st.srt(p.doc)
     assert srt.startswith("1\n00:00:00,000 --> ") and "-->" in srt.split("\n\n")[-1]
+
+
+def test_musique_sous_la_voix():
+    from moteur.audio import zones_depuis_mots, zones_depuis_pics, cles_baisse
+    mots = [{"start": 1.0, "end": 1.4}, {"start": 1.5, "end": 2.0}, {"start": 5.0, "end": 6.0}]
+    z = zones_depuis_mots(mots)
+    assert z == [(1.0, 2.0), (5.0, 6.0)]
+    clip = {"start": 0.0, "duration": 10.0, "props": {"volume": 1.0}}
+    keys = cles_baisse(clip, z, profondeur_db=-12, attaque=0.25, relache=0.5)
+    vals = {k["t"]: k["v"] for k in keys}
+    assert vals[0.75] == 1.0 and abs(vals[1.0] - 0.2512) < 1e-3 and vals[2.5] == 1.0
+    assert abs(vals[6.0] - 0.2512) < 1e-3 and vals[6.5] == 1.0
+    # zones proches fusionnées : pas de remontée entre les deux
+    keys2 = cles_baisse(clip, [(1.0, 2.0), (2.3, 3.0)])
+    assert [k["t"] for k in keys2] == [0.75, 1.0, 3.0, 3.5]
+    # forme d'onde : du son de 1 à 2 s seulement
+    pics = {"m": {"per_sec": 10, "peaks": [0.0] * 10 + [0.5] * 10 + [0.0] * 20}}
+    zv = zones_depuis_pics([{"start": 0, "duration": 4, "in": 0, "speed": 1, "media": "m", "props": {"volume": 1}}], pics)
+    assert zv == [(1.0, 2.0)]
+
+
+def test_transitions():
+    from moteur.projet import spans
+    p = projet_avec_media()
+    p.appliquer([{"op": "add_clip", "media": "m1", "start": 0, "duration": 4, "id": "a"},
+                 {"op": "add_clip", "media": "m1", "start": 4, "in": 8, "duration": 4, "id": "b"},
+                 {"op": "add_clip", "media": "m1", "start": 10, "duration": 2, "id": "c"}])
+    p.appliquer([{"op": "set_transition", "clip": "b", "type": "fondu_enchaine", "duration": 1.0}])
+    sp = spans(p.doc)
+    assert sp["a"] == [0, 4.5] and sp["b"] == [3.5, 8] and sp["c"] == [10, 12]
+    with pytest.raises(OpError, match="Aucun clip ne finit juste avant"):
+        p.appliquer([{"op": "set_transition", "clip": "c", "type": "volet"}])
+    with pytest.raises(OpError, match="trop longue"):
+        p.appliquer([{"op": "set_transition", "clip": "b", "type": "volet", "duration": 5}])
+    with pytest.raises(OpError, match="n'est pas une transition"):
+        p.appliquer([{"op": "set_transition", "clip": "b", "type": "blur"}])
+    with pytest.raises(OpError, match="est une transition"):
+        p.appliquer([{"op": "add_effect", "clip": "b", "effect": "iris"}])
+    # scinder le clip entrant : seule sa moitié gauche garde la transition
+    (r,), _ = p.appliquer([{"op": "split_clip", "clip": "b", "at": 6}])
+    assert "trans_in" in p.doc["clips"]["b"] and "trans_in" not in p.doc["clips"][r]
+    # transition sur mesure écrite par l'IA
+    p.appliquer([{"op": "define_effect", "name": "spirale", "kind": "transition",
+                  "glsl": "vec4 effect(vec2 uv){ return mix(below(uv), src(uv), p_progress); }"},
+                 {"op": "set_transition", "clip": r, "type": "spirale", "duration": 0.5}])
+    assert p.doc["effects"]["spirale"]["blend"] == "replace" and "progress" in p.doc["effects"]["spirale"]["params"]
+    p.appliquer([{"op": "set_transition", "clip": r, "type": None}])
+    assert "trans_in" not in p.doc["clips"][r]

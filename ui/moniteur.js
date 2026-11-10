@@ -32,6 +32,8 @@ export class Moniteur {
       if (e.key === 'Enter') { const v = parseTC(this.tc.value, fps()); if (v !== null) app.seek(v); this.tc.blur(); }
     });
     this.dur = el('span', { class: 'tcdur' }, '00:00:00:00');
+    this.meter = el('canvas', { class: 'meter', width: 170, height: 28,
+      title: 'Crêtes gauche / droite (dBFS) et volume perçu sur 3 s (LUFS). Cible YouTube : −14 LUFS, crêtes sous −1 dB.' });
     this.playBtn = el('button', { class: 'tp big', title: 'Lecture / pause (Espace)', onclick: () => app.toggle() }, '▶');
     const zoomSel = el('select', { title: 'Zoom du moniteur' },
       [['fit', 'Ajuster'], ['0.25', '25 %'], ['0.5', '50 %'], ['1', '100 %']].map(([v, l]) => el('option', { value: v }, l)));
@@ -51,7 +53,38 @@ export class Moniteur {
         el('button', { class: 'tp', title: 'Image suivante (→)', onclick: () => app.seek(app.playhead + 1 / fps()) }, '|▶'),
         el('button', { class: 'tp', title: 'Point de montage suivant (↓)', onclick: () => app.jumpEdit(1) }, '⇥'),
         el('button', { class: 'tp', title: 'Fin (Fin)', onclick: () => app.seek(app.duration()) }, '⏭')),
-      el('div', { class: 'tp-right' }, safeBtn, zoomSel, qSel, this.dur));
+      el('div', { class: 'tp-right' }, this.meter, safeBtn, zoomSel, qSel, this.dur));
+    this.drawMeter(null);
+  }
+
+  // Vu-mètres : deux barres de crête (−60 à 0 dBFS) et le LUFS court terme.
+  drawMeter(m) {
+    const cv = this.meter, d = devicePixelRatio || 1;
+    if (cv.width !== 170 * d) { cv.width = 170 * d; cv.height = 28 * d; }
+    const g = cv.getContext('2d');
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.clearRect(0, 0, 170, 28);
+    const W = 108, x0 = 2, X = v => x0 + Math.max(0, Math.min(1, (v + 60) / 60)) * W;
+    [[3, 0], [15, 1]].forEach(([y, i]) => {
+      g.fillStyle = '#111215'; g.fillRect(x0, y, W, 9);
+      if (m) {
+        const v = m.peaks[i];
+        const grad = g.createLinearGradient(x0, 0, x0 + W, 0);
+        grad.addColorStop(0, '#2f9e62'); grad.addColorStop(0.7, '#2f9e62'); grad.addColorStop(0.9, '#d9b13b'); grad.addColorStop(1, '#e0484f');
+        g.fillStyle = grad; g.fillRect(x0, y, X(v) - x0, 9);
+        g.fillStyle = m.hold[i] > -1 ? '#ff4d5e' : '#e6e8ee'; g.fillRect(X(m.hold[i]) - 1, y, 2, 9);
+      }
+    });
+    g.fillStyle = 'rgba(255,255,255,.35)';
+    for (const v of [-40, -20, -14, -6, -1]) g.fillRect(X(v), 13, 1, 2);
+    const l = m?.lufs;
+    const txt = m && Number.isFinite(l) ? `${l.toFixed(1).replace('.', ',')}` : '—';
+    g.font = '600 12px system-ui'; g.textBaseline = 'middle'; g.textAlign = 'right';
+    g.fillStyle = !m || !Number.isFinite(l) ? '#6c717d' : l > -11 ? '#ff9a6b' : l >= -17 ? '#7ee0a5' : '#b9bdc6';
+    g.fillText(txt, 152, 11);
+    g.font = '10px system-ui'; g.fillStyle = '#8b909c';
+    g.fillText('LUFS', 166, 23);
+    g.textAlign = 'left';
   }
 
   update() {

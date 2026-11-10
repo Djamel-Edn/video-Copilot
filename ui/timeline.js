@@ -74,10 +74,26 @@ export class Timeline {
     return i >= 0 && i < rows.length ? rows[i] : null;
   }
 
+  // Rectangles des transitions actives : centrés sur la coupe, de la durée de la transition.
+  transitions() {
+    const sp = this.app.spans(), out = [];
+    for (const c of Object.values(this.app.doc.clips)) {
+      if (!c.trans_in || !sp[c.id] || sp[c.id][0] >= c.start - 1e-6) continue;
+      out.push({ clip: c, a: c.start - c.trans_in.duration / 2, b: c.start + c.trans_in.duration / 2 });
+    }
+    return out;
+  }
+
   hit(px, py) {
     const track = this.rowAt(py);
     if (!track) return {};
     if (px < LABEL) return { track, header: true };
+    const ri = this.rows().indexOf(track), y0 = this.rowY(ri);
+    if (py - y0 < 22) {
+      for (const tr of this.transitions()) {
+        if (tr.clip.track === track.id && px >= this.x(tr.a) - 2 && px <= this.x(tr.b) + 2) return { track, clip: tr.clip, zone: 'transition' };
+      }
+    }
     for (const c of Object.values(this.app.doc.clips)) {
       if (c.track !== track.id) continue;
       const x0 = this.x(c.start), x1 = this.x(c.start + c.duration);
@@ -163,6 +179,7 @@ export class Timeline {
       app.select([...s]);
       return;
     }
+    if (h.zone === 'transition') { app.select([c.id]); this.app.inspector.openTransition = true; return; }
     if (!app.selection.includes(c.id)) app.select(group);
     if (this.locked(c.track)) return;
     // Rogner un clip lié rogne aussi son partenaire (sauf Alt).
@@ -271,6 +288,10 @@ export class Timeline {
     if (app.selection.length >= 2 && !c.link) {
       linkItems.push({ label: 'Lier la sélection', action: () => app.send([{ op: 'link_clips', clips: app.selection }], 'Lier') });
     }
+    if (app.clipKind(c) === 'audio') {
+      const ids = app.selection.filter(id => app.doc.clips[id] && app.clipKind(app.doc.clips[id]) === 'audio');
+      linkItems.push({ label: 'Baisser sous la voix', action: () => app.duckMusic(ids.length ? ids : [c.id]) });
+    }
     if (c.audio_muted) {
       linkItems.push({ label: 'Réactiver le son de la vidéo', action: () => app.send([{ op: 'update_clip', clip: c.id, audio_muted: false }], 'Réactiver le son') });
     }
@@ -278,6 +299,9 @@ export class Timeline {
       { label: 'Scinder ici', action: () => app.send([{ op: 'split_clip', clip: c.id, at: this.snapT(this.t(px)) }], 'Scinder') },
       { label: 'Dupliquer à la suite', action: () => app.send(group.map(id => ({ op: 'duplicate_clip', clip: id, overwrite: true })), 'Dupliquer') },
       { label: 'Copier (Ctrl+C)', action: () => app.copy() },
+      ...(app.neighbor(c, -1) && app.clipKind(c) !== 'audio' ? [{ label: c.trans_in ? 'Retirer la transition d\'entrée' : 'Fondu enchaîné avec le clip précédent',
+        action: () => c.trans_in ? app.send([{ op: 'set_transition', clip: c.id, type: null }], 'Retirer la transition')
+                                  : app.applyTransition('fondu_enchaine', c.id) }] : []),
       ...(linkItems.length ? ['-', ...linkItems] : []),
       '-',
       { label: 'Vitesse…', action: () => {
@@ -324,8 +348,12 @@ export class Timeline {
       app.addMedia(dt.getData('application/x-media'), t, h.track?.id);
     } else if (dt.types.includes('application/x-effect')) {
       e.preventDefault(); e.stopPropagation();
-      if (h.clip) app.applyEffect(dt.getData('application/x-effect'), [h.clip.id]);
-      else app.toast('Dépose l\'effet sur un clip.', true);
+      const name = dt.getData('application/x-effect');
+      if (!h.clip) app.toast('Dépose l\'effet sur un clip.', true);
+      else if (app.defs()[name]?.kind === 'transition') {
+        // Moitié droite du clip : transition vers le clip suivant ; moitié gauche : depuis le précédent.
+        app.applyTransition(name, h.clip.id, px > (this.x(h.clip.start) + this.x(h.clip.start + h.clip.duration)) / 2);
+      } else app.applyEffect(name, [h.clip.id]);
     } else if (dt.types.includes('application/x-textpreset')) {
       e.preventDefault(); e.stopPropagation();
       app.addTextPreset(dt.getData('application/x-textpreset'), t, h.track?.kind === 'video' ? h.track.id : null);
@@ -408,6 +436,21 @@ export class Timeline {
         g.beginPath(); g.roundRect(x0, y, x1 - x0, h, 4); g.stroke(); g.restore();
       }
       if (sel.has(c0.id)) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.roundRect(x0 + 1, y + 1, x1 - x0 - 2, h - 2, 4); g.stroke(); }
+    }
+    // transitions
+    for (const tr of this.transitions()) {
+      const ri = rows.findIndex(r => r.id === tr.clip.track);
+      if (ri < 0) continue;
+      const xa = this.x(tr.a), xb = this.x(tr.b), y = this.rowY(ri) + 4;
+      if (xb < LABEL || xa > W) continue;
+      const grad = g.createLinearGradient(xa, 0, xb, 0);
+      grad.addColorStop(0, 'rgba(180,150,255,.25)'); grad.addColorStop(0.5, 'rgba(200,175,255,.9)'); grad.addColorStop(1, 'rgba(180,150,255,.25)');
+      g.fillStyle = grad;
+      g.beginPath(); g.roundRect(xa, y, Math.max(6, xb - xa), 14, 3); g.fill();
+      g.strokeStyle = sel.has(tr.clip.id) ? '#fff' : 'rgba(255,255,255,.5)'; g.lineWidth = 1; g.stroke();
+      g.fillStyle = '#1b1530'; g.font = '600 10px system-ui'; g.textAlign = 'center';
+      if (xb - xa > 16) g.fillText('⇄', (xa + xb) / 2, y + 7.5);
+      g.textAlign = 'left';
     }
     if (this.dropHint) {
       const x = this.x(this.dropHint.t);

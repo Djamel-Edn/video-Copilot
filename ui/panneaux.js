@@ -95,9 +95,12 @@ export class Panneaux {
     for (const [g, ds] of Object.entries(groups)) {
       l.append(el('div', { class: 'pgroup' }, g));
       for (const d of ds) {
-        const it = el('div', { class: 'pitem', draggable: 'true', title: 'Glisser sur un clip · double-clic : appliquer à la sélection' },
-          el('span', { class: 'fxicon' + (d.builtin ? '' : ' custom') }, d.builtin ? 'fx' : '★'), el('span', {}, d.label),
-          d.blend === 'replace' ? el('small', { class: 'muted' }, ' fusion') : null);
+        const isT = d.kind === 'transition';
+        const it = el('div', { class: 'pitem', draggable: 'true', title: isT
+            ? 'Glisser sur un point de coupe entre deux clips · double-clic : avant le clip sélectionné'
+            : 'Glisser sur un clip · double-clic : appliquer à la sélection' },
+          el('span', { class: 'fxicon' + (d.builtin ? '' : ' custom') + (isT ? ' trans' : '') }, isT ? '⇄' : d.builtin ? 'fx' : '★'), el('span', {}, d.label),
+          d.blend === 'replace' && d.kind !== 'transition' ? el('small', { class: 'muted' }, ' fusion') : null);
         it.addEventListener('dragstart', e => e.dataTransfer.setData('application/x-effect', d.name));
         it.addEventListener('dblclick', () => app.applyEffect(d.name, app.selection));
         l.append(it);

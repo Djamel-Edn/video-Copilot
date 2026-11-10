@@ -117,6 +117,10 @@ export class Inspecteur {
     if (hasAudio || (kind === 'video' && media?.has_audio)) {
       const s = this.section('Audio', root);
       if (hasAudio) s.append(this.propRow(get, 'volume', 'Volume', { step: 0.005, decimals: 0, mul: 100, unit: ' %', min: 0, max: 2 }));
+      if (kind === 'audio') {
+        s.append(this.line('Musique', el('button', { title: "Écrit des images clés de volume qui baissent ce clip de 12 dB pendant que quelqu'un parle",
+          onclick: () => app.duckMusic([id]) }, 'Baisser sous la voix')));
+      }
       if (kind === 'video' && media?.has_audio && !c.audio_muted) {
         s.append(this.line('Son', el('button', { onclick: () => app.separateAudio(id), title: 'Le son passe sur une piste audio, lié à l\'image' }, 'Séparer le son')));
       } else if (c.audio_muted) {
@@ -128,6 +132,7 @@ export class Inspecteur {
           el('button', { class: 'mini', onclick: () => app.send([{ op: 'unlink_clips', clips: app.group(id) }], 'Délier') }, 'Délier')));
       }
     }
+    if (visual && (app.neighbor(c, -1) || c.trans_in)) this.transitionSection(get, root);
     if (visual) this.effectsSection(get, root);
   }
 
@@ -310,6 +315,37 @@ export class Inspecteur {
     }
   }
 
+  // ------------------------------------------------------------ transition d'entrée
+  transitionSection(get, root) {
+    const app = this.app, c = get(), id = c.id, defs = app.defs();
+    const tr = c.trans_in;
+    const s = this.section("Transition d'entrée", root);
+    const left = app.neighbor(c, -1);
+    if (!left) { s.append(el('p', { class: 'muted small' }, 'Inactive : aucun clip ne touche le début de celui-ci.')); }
+    const list = Object.values(defs).filter(d => d.kind === 'transition');
+    const send = (patch, label) => app.send([{ op: 'set_transition', clip: id, type: tr?.type, duration: tr?.duration ?? 0.5, ...patch }], label);
+    s.append(this.line('Type', selectInput([['', 'Aucune (coupe franche)'], ...list.map(d => [d.name, (d.builtin ? '' : '★ ') + d.label])], tr?.type || '',
+      v => v ? send({ type: v, params: undefined, duration: Math.min(tr?.duration ?? 0.5, left?.duration ?? 0.5, c.duration) }, `Transition : ${defs[v].label}`)
+             : app.send([{ op: 'set_transition', clip: id, type: null }], 'Retirer la transition'))));
+    if (!tr) return;
+    const maxi = Math.min(left?.duration ?? c.duration, c.duration);
+    s.append(this.plainRow('Durée', tr.duration, { step: 1 / app.doc.settings.fps, decimals: 2, unit: ' s', min: 1 / app.doc.settings.fps, max: maxi },
+      v => send({ duration: v }, 'Durée de la transition')));
+    const def = defs[tr.type];
+    for (const [pn, pd] of Object.entries(def?.params || {})) {
+      if (pn === 'progress') continue;
+      const v = tr.params?.[pn] ?? pd.default;
+      if (pd.type === 'color') {
+        s.append(this.line(pd.label || pn, colorInput(rgbHex(v), hv => send({ params: { [pn]: hv } }, `Transition · ${pd.label || pn}`))));
+      } else {
+        const span = (pd.max ?? 1) - (pd.min ?? 0) || 1;
+        s.append(this.plainRow(pd.label || pn, v, { step: span / 300, decimals: span >= 50 ? 0 : 2, min: pd.min, max: pd.max },
+          nv => send({ params: { [pn]: nv } }, `Transition · ${pd.label || pn}`)));
+      }
+    }
+    s.append(el('p', { class: 'muted small' }, 'Sans assez d\'images avant ce clip ou après le précédent, la transition fige l\'image du bord.'));
+  }
+
   // ------------------------------------------------------------ effets
   effectsSection(get, root) {
     const app = this.app, c = get(), id = c.id, defs = app.defs();
@@ -355,7 +391,7 @@ export class Inspecteur {
       s.append(el('div', { class: 'fx-card' }, head, body));
     });
     const groups = {};
-    for (const d of Object.values(defs)) (groups[d.builtin ? (d.category || 'Divers') : 'Sur mesure (IA)'] ||= []).push(d);
+    for (const d of Object.values(defs)) if (d.kind !== 'transition') (groups[d.builtin ? (d.category || 'Divers') : 'Sur mesure (IA)'] ||= []).push(d);
     const sel = el('select', { class: 'addfx' }, el('option', { value: '' }, '+ Ajouter un effet…'),
       Object.entries(groups).map(([g, ds]) => el('optgroup', { label: g }, ds.map(d => el('option', { value: d.name }, d.label)))));
     sel.addEventListener('change', () => sel.value && app.send([{ op: 'add_effect', clip: id, effect: sel.value }], `Effet ${defs[sel.value].label}`));

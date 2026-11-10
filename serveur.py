@@ -25,9 +25,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from moteur import export as exp
-from moteur import medias, sous_titres, texte
+from moteur import audio, medias, sous_titres, texte
 from moteur.effets import BUILTIN, CONTRAT_GLSL
-from moteur.projet import OPS, OpError, Projet, duree_totale, nouveau_document
+from moteur.projet import OPS, OpError, Projet, duree_totale, nouveau_document, spans
 
 ROOT = Path(__file__).parent
 UI = ROOT / "ui"
@@ -213,9 +213,12 @@ def creer_app(etat: Etat) -> FastAPI:
     async def define_effect(body: dict):
         """Compile d'abord le shader dans l'interface, n'applique que s'il compile."""
         compile_info = {"ok": None, "log": "non vérifié : aucune interface ouverte"}
+        params_compil = dict(body.get("params") or {})
+        if body.get("kind") == "transition":   # p_progress est fourni par le moteur
+            params_compil.setdefault("progress", {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0})
         if etat.clients:
             compile_info = await etat.demander_ui({"type": "compile_request", "effect": {
-                "name": body.get("name"), "glsl": body.get("glsl"), "params": body.get("params") or {}}})
+                "name": body.get("name"), "glsl": body.get("glsl"), "params": params_compil}})
             if not compile_info.get("ok"):
                 return JSONResponse({"ok": False, "error": "Le shader ne compile pas.",
                                      "log": compile_info.get("log", "")}, status_code=400)
@@ -437,6 +440,48 @@ def creer_app(etat: Etat) -> FastAPI:
             return err(e)
         return {"ok": True, "cuts": len(plages), "removed_seconds": round(sum(b - a for a, b in plages), 2)}
 
+    # ------------------------------------------------------------ musique sous la voix
+    async def pics_media(mid):
+        m = etat.projet.doc["media"][mid]
+        dst = etat.dossier / "cache" / f"{mid}.peaks.json"
+        if not dst.exists():
+            await asyncio.to_thread(medias.forme_onde, Path(m["path"]), dst)
+        return json.loads(dst.read_text("utf-8"))
+
+    @app.post("/api/duck")
+    async def duck(body: dict):
+        """Baisse les clips de musique désignés pendant la voix (images clés de volume)."""
+        doc = etat.projet.doc
+        music = [cid for cid in body.get("clips") or [] if cid in doc["clips"]]
+        if not music:
+            raise HTTPException(400, "Désigne le ou les clips de musique à baisser.")
+        mots = [m for m in texte.mots_timeline(doc, transcripts()) if m["clip"] not in music]
+        if mots:
+            zones, source = audio.zones_depuis_mots(mots), "transcription"
+        else:
+            voix = []
+            for c in doc["clips"].values():
+                m = doc["media"].get(c.get("media")) if c["type"] == "media" else None
+                tr = next((t for t in doc["tracks"] if t["id"] == c["track"]), None)
+                if (c["id"] in music or m is None or m["kind"] == "image" or c.get("audio_muted")
+                        or not (m["kind"] == "audio" or m.get("has_audio")) or (tr and tr.get("muted"))):
+                    continue
+                voix.append(c)
+            pics = {}
+            for c in voix:
+                if c["media"] not in pics:
+                    pics[c["media"]] = await pics_media(c["media"])
+            zones, source = audio.zones_depuis_pics(voix, pics, float(body.get("threshold", 0.06))), "forme d'onde"
+        if not zones:
+            raise HTTPException(400, "Aucune voix trouvée sous ces clips (transcris la voix, ou vérifie qu'elle est sur une autre piste).")
+        ops = audio.ops_baisse(doc, music, zones, float(body.get("depth_db", -12)), float(body.get("attack", 0.25)),
+                               float(body.get("release", 0.5)))
+        try:
+            await etat.appliquer(ops, body.get("label") or "Baisser la musique sous la voix", body.get("origin", "ui"))
+        except OpError as e:
+            return err(e)
+        return {"ok": True, "zones": len(zones), "source": source, "clips": music}
+
     # ------------------------------------------------------------ sous-titres automatiques
     @app.get("/api/subtitles/styles")
     async def subtitle_styles():
@@ -504,10 +549,12 @@ def creer_app(etat: Etat) -> FastAPI:
     @app.post("/api/export")
     async def export_request(body: dict):
         """Pour le copilote : demande à l'interface ouverte de lancer l'export."""
-        if etat.export.get("state") == "running":
+        if etat.export.get("state") in ("running", "starting"):
             raise HTTPException(409, "Un export est déjà en cours.")
         if not etat.clients:
             raise HTTPException(409, "Aucune interface ouverte : l'export a besoin du moteur de rendu de l'interface.")
+        # État « starting » tout de suite : export_status ne renvoie plus le « done » de l'export précédent.
+        etat.export = {"state": "starting", "path": body.get("path")}
         await next(iter(etat.clients)).send_text(json.dumps({"type": "export_request", "options": body}))
         return {"ok": True, "message": "Export lancé dans l'interface. Suis-le avec export_status."}
 
@@ -553,6 +600,16 @@ def creer_app(etat: Etat) -> FastAPI:
         cache = etat.dossier / "cache"
         cache.mkdir(exist_ok=True)
         graph_file = None
+        loud = None
+        cible_nom = opts.get("loudness", "youtube")
+        if graph and cible_nom in exp.LOUDNESS:
+            # Deux passes : mesure du mixage, puis correction linéaire vers la cible (sans pompage).
+            cible = exp.LOUDNESS[cible_nom]
+            mesure = await asyncio.to_thread(exp.mesurer_loudness, doc, t0, t1, cible, cache / "export_loudness.txt")
+            if mesure:
+                graph += f";\n[{alab}]{exp.loudnorm_filtre(cible, mesure)}[an]"
+                alab = "an"
+                loud = {"mesure": float(mesure["input_i"]), "cible": cible}
         if graph:
             graph_file = cache / "export_audio.txt"
             graph_file.write_text(graph, "utf-8")
@@ -573,6 +630,7 @@ def creer_app(etat: Etat) -> FastAPI:
                                       ensure_ascii=False))
         decs: dict = {}
         out_scale = min(ow / W, oh / H)
+        sp = spans(doc)
         try:
             # À la chaîne : pendant que l'interface rend l'image i, on décode déjà
             # l'image i+1 et on encode l'image i-1.
@@ -581,7 +639,7 @@ def creer_app(etat: Etat) -> FastAPI:
             def build(i):
                 t0b = time.time()
                 t = exp.frame_time(t0, i, fps)
-                active = exp.video_clips_at(doc, t)
+                active = exp.video_clips_at(doc, t, sp)
                 ids = {c["id"] for c in active}
                 for cid in [k for k in decs if k not in ids]:
                     decs.pop(cid).close()
@@ -592,7 +650,7 @@ def creer_app(etat: Etat) -> FastAPI:
                         w, h = exp.decode_size(doc, c, out_scale)
                         d = decs[c["id"]] = exp.Decodeur(
                             doc["media"][c["media"]]["path"], c["in"] + (t - c["start"]) * c["speed"], c["speed"],
-                            fps, w, h, c["start"] + c["duration"] - t)
+                            fps, w, h, sp[c["id"]][1] - t)
                     payload.append(d.read())
                     head.append({"id": c["id"], "w": d.w, "h": d.h, "fmt": d.fmt})
                 hb = json.dumps({"i": i, "t": t, "clips": head}).encode()
@@ -648,7 +706,8 @@ def creer_app(etat: Etat) -> FastAPI:
             el = time.time() - started
             etat.export = {"state": "done", "path": str(out), "frames": n, "seconds": round(el, 1),
                            "size_mb": round(out.stat().st_size / 1e6, 1), "encoder": encoder,
-                           "fps": round(n / el, 1) if el > 0 else 0.0, "timing": {k: round(v, 1) for k, v in tim.items()}}
+                           "fps": round(n / el, 1) if el > 0 else 0.0, "timing": {k: round(v, 1) for k, v in tim.items()},
+                           "loudness": loud}
             await ws.send_text(json.dumps({"type": "done", **etat.export}))
         except (asyncio.CancelledError, WebSocketDisconnect):
             etat.export = {"state": "cancelled", "path": str(out)}

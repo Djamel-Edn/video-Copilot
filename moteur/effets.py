@@ -18,7 +18,10 @@ d'éventuelles fonctions d'aide au-dessus. Disponible :
   p_<nom>    : chaque paramètre déclaré (float, ou vec3 pour type "color")
 Couleurs en alpha non prémultiplié. Hors du cadre du clip, src() a alpha 0.
 blend "over" : le résultat se superpose. blend "replace" : il remplace
-l'image composée (transitions, modes de fusion : utiliser below()).
+l'image composée (modes de fusion : utiliser below()).
+Transition (kind "transition") : src = le clip qui entre, below = l'image qui
+contient le clip qui sort ; le paramètre p_progress (0 → 1) est piloté par le
+moteur pendant la durée de la transition.
 Pas de #version, pas de uniform à déclarer, pas de main().
 """
 
@@ -214,6 +217,128 @@ vec4 effect(vec2 uv) {
     },
 }
 
+
+# ---------------------------------------------------------------- transitions
+# Même contrat qu'un effet en mode « replace » : src(uv) = le clip qui ENTRE,
+# below(uv) = l'image déjà composée, qui contient le clip qui SORT.
+# p_progress va de 0 à 1 sur la durée de la transition (piloté par le moteur).
+
+def _prog():
+    return {"type": "float", "default": 0.0, "min": 0, "max": 1, "label": "Progression (automatique)"}
+
+
+TRANSITIONS = {
+    "fondu_enchaine": {
+        "label": "Fondu enchaîné",
+        "params": {"progress": _prog()},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec4 s = src(uv); vec4 b = below(uv);
+    return vec4(mix(b.rgb, s.rgb, p_progress * s.a), 1.0);
+}""",
+    },
+    "fondu_noir": {
+        "label": "Fondu au noir",
+        "params": {"progress": _prog(), "color": _c([0.0, 0.0, 0.0], "Couleur")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec4 s = src(uv); vec4 b = below(uv);
+    vec3 r = p_progress < 0.5 ? mix(b.rgb, p_color, p_progress * 2.0)
+                              : mix(p_color, mix(b.rgb, s.rgb, s.a), (p_progress - 0.5) * 2.0);
+    return vec4(r, 1.0);
+}""",
+    },
+    "fondu_blanc": {
+        "label": "Fondu au blanc",
+        "params": {"progress": _prog(), "color": _c([1.0, 1.0, 1.0], "Couleur")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec4 s = src(uv); vec4 b = below(uv);
+    vec3 r = p_progress < 0.5 ? mix(b.rgb, p_color, p_progress * 2.0)
+                              : mix(p_color, mix(b.rgb, s.rgb, s.a), (p_progress - 0.5) * 2.0);
+    return vec4(r, 1.0);
+}""",
+    },
+    "volet": {
+        "label": "Volet",
+        "params": {"progress": _prog(), "angle": _f(0.0, -180, 180, "Direction (°)"), "softness": _f(0.04, 0, 0.5, "Bord adouci")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec4 s = src(uv); vec4 b = below(uv);
+    float a = radians(p_angle);
+    vec2 d = vec2(cos(a), sin(a));
+    float x = dot(uv - 0.5, d) / (abs(d.x) + abs(d.y)) + 0.5;
+    float e = p_progress * (1.0 + p_softness);
+    float m = 1.0 - smoothstep(e - p_softness, e, x);
+    return vec4(mix(b.rgb, s.rgb, m * s.a), 1.0);
+}""",
+    },
+    "poussee": {
+        "label": "Poussée",
+        "params": {"progress": _prog(), "angle": _f(0.0, -180, 180, "Direction (°)")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    float a = radians(p_angle);
+    vec2 d = vec2(cos(a), sin(a));
+    float p = p_progress * p_progress * (3.0 - 2.0 * p_progress);
+    vec2 ua = uv + d * p;          // l'image qui sort part dans la direction
+    vec2 ub = uv + d * (p - 1.0);  // l'image qui entre arrive derrière elle
+    bool inB = all(greaterThanEqual(ub, vec2(0.0))) && all(lessThanEqual(ub, vec2(1.0)));
+    vec4 s = src(ub);
+    vec3 r = inB ? mix(below(ua).rgb, s.rgb, s.a) : below(ua).rgb;
+    return vec4(r, 1.0);
+}""",
+    },
+    "zoom": {
+        "label": "Zoom croisé",
+        "params": {"progress": _prog(), "amount": _f(0.6, 0, 2, "Intensité")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec2 c = vec2(0.5);
+    float p = p_progress;
+    vec4 a = below(c + (uv - c) / (1.0 + p * p_amount));
+    vec4 s = src(c + (uv - c) / (1.0 + (1.0 - p) * p_amount * 0.5));
+    float m = smoothstep(0.3, 0.7, p) * s.a;
+    return vec4(mix(a.rgb, s.rgb, m), 1.0);
+}""",
+    },
+    "flou": {
+        "label": "Fondu flou",
+        "params": {"progress": _prog(), "radius": _f(24.0, 0, 80, "Flou max (px)")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    float r = sin(3.14159 * p_progress) * p_radius;
+    vec2 px = r / u_res / 3.0;
+    vec4 a = vec4(0.0), s = vec4(0.0); float w = 0.0;
+    for (int i = -3; i <= 3; i++) {
+        for (int j = -3; j <= 3; j++) {
+            float k = exp(-float(i * i + j * j) / 6.0);
+            vec2 o = vec2(float(i), float(j)) * px;
+            a += below(uv + o) * k; s += src(uv + o) * k; w += k;
+        }
+    }
+    a /= w; s /= w;
+    return vec4(mix(a.rgb, s.rgb, smoothstep(0.25, 0.75, p_progress) * s.a), 1.0);
+}""",
+    },
+    "iris": {
+        "label": "Iris (cercle)",
+        "params": {"progress": _prog(), "softness": _f(0.03, 0, 0.3, "Bord adouci")},
+        "glsl": """
+vec4 effect(vec2 uv) {
+    vec4 s = src(uv); vec4 b = below(uv);
+    vec2 q = (uv - 0.5) * vec2(u_res.x / u_res.y, 1.0);
+    float rmax = length(vec2(u_res.x / u_res.y, 1.0)) * 0.5 + p_softness;
+    float m = 1.0 - smoothstep(p_progress * rmax - p_softness, p_progress * rmax, length(q));
+    return vec4(mix(b.rgb, s.rgb, m * s.a), 1.0);
+}""",
+    },
+}
+
+for _name, _d in TRANSITIONS.items():
+    _d.update(kind="transition", blend="replace", category="Transitions")
+    BUILTIN[_name] = _d
+
 CATEGORIES = {
     "brightness_contrast": "Couleur", "saturation": "Couleur", "black_white": "Couleur", "tint": "Couleur",
     "blur": "Flou et netteté", "sharpen": "Flou et netteté",
@@ -223,7 +348,8 @@ CATEGORIES = {
 }
 
 for _name, _d in BUILTIN.items():
-    _d["category"] = CATEGORIES.get(_name, "Divers")
+    _d.setdefault("kind", "effect")
+    _d["category"] = _d.get("category") or CATEGORIES.get(_name, "Divers")
     _d.setdefault("blend", "over")
     _d["name"] = _name
     _d["builtin"] = True

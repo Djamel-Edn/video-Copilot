@@ -77,6 +77,12 @@ def _compact(doc):
                             for f in c["effects"]]
         if c["keyframes"]:
             e["keyframes"] = c["keyframes"]
+        if c.get("trans_in"):
+            e["transition_in"] = c["trans_in"]
+        if c.get("link"):
+            e["link"] = c["link"]
+        if c.get("audio_muted"):
+            e["audio_muted"] = True
         clips.append(e)
     return {"settings": doc["settings"], "tracks": [{"id": t["id"], "kind": t["kind"], "hidden": t["hidden"],
                                                       "muted": t["muted"]} for t in doc["tracks"]],
@@ -128,6 +134,12 @@ def apply_ops(ops: list[dict], label: str) -> dict:
         muette (audio_muted). Scinder l'un scinde l'autre ; pour déplacer, rogner
         ou supprimer une paire liée, envoie l'opération pour LES DEUX clips.
     - link_clips {clips: [ids]} · unlink_clips {clips: [ids]}
+    - set_transition {clip, type, duration?, params?}  : transition entre ce clip et
+        celui qui le précède SUR LA MÊME PISTE (ils doivent se toucher). type : un
+        effet de kind "transition" (fondu_enchaine, fondu_noir, fondu_blanc, volet,
+        poussee, zoom, flou, iris, ou une transition sur mesure) ; type null = retirer.
+        Les deux clips se prolongent de duration/2 dans la marge de leur source
+        (image figée si la source n'en a pas assez).
     - cut_range {start, end, tracks?: [ids], ripple?: true}  : retire la plage
         sur les pistes (toutes par défaut) et resserre ce qui suit si ripple.
     - add_effect {clip, effect, params?, index?}  -> id de l'instance (fxN)
@@ -166,7 +178,7 @@ def list_effects(include_glsl: bool = False) -> dict:
     paramètres, plus le contrat GLSL pour en écrire de nouveaux."""
     d = _call("GET", "/api/effects")
     def short(e):
-        out = {"label": e["label"], "blend": e["blend"], "params": e["params"]}
+        out = {"label": e["label"], "kind": e.get("kind", "effect"), "blend": e["blend"], "params": e["params"]}
         if include_glsl:
             out["glsl"] = e["glsl"]
         return out
@@ -176,7 +188,7 @@ def list_effects(include_glsl: bool = False) -> dict:
 
 @mcp.tool()
 def define_effect(name: str, glsl: str, params: dict | None = None, label: str = "",
-                  blend: str = "over", description: str = "") -> dict:
+                  blend: str = "over", description: str = "", kind: str = "effect") -> dict:
     """Crée (ou remplace) un effet sur mesure en écrivant un shader GLSL.
     Le shader est compilé dans l'interface AVANT d'être accepté ; en cas
     d'erreur, le log de compilation est renvoyé : corrige et rappelle.
@@ -189,10 +201,13 @@ def define_effect(name: str, glsl: str, params: dict | None = None, label: str =
     blend : "over" (se superpose) ou "replace" (remplace l'image composée :
       transitions, modes de fusion, avec below()).
     Ensuite : apply_ops add_effect {clip, effect: name}.
+    kind "transition" : src = le clip qui entre, below = l'image avec le clip qui
+    sort, p_progress (0 → 1) est fourni automatiquement ; s'applique avec
+    set_transition (pas add_effect).
     """
     return _call("POST", "/api/effects/define", {"name": name, "glsl": glsl, "params": params or {},
                                                  "label": label or name, "blend": blend,
-                                                 "description": description})
+                                                 "description": description, "kind": kind})
 
 
 @mcp.tool()
@@ -218,16 +233,17 @@ def import_media(path: str) -> dict:
 
 @mcp.tool()
 def export_video(path: str = "", quality: str = "haute", scale: float = 1.0, start: float = 0.0,
-                 end: float | None = None, encoder: str = "x264") -> dict:
+                 end: float | None = None, encoder: str = "x264", loudness: str = "youtube") -> dict:
     """Lance l'export MP4 (H.264 + AAC) de la séquence, rendu par l'interface
     ouverte avec le même moteur que l'aperçu. Rend la main tout de suite :
     suis l'avancement avec export_status.
     path : chemin complet du .mp4 (vide = dossier exports du projet) ;
     quality : haute | moyenne | legere ; scale : 1 = résolution de la séquence,
     0.5 = moitié ; start / end : plage en secondes (end vide = jusqu'à la fin) ;
-    encoder : x264 ou nvenc (si disponible)."""
+    encoder : x264 ou nvenc (si disponible) ; loudness : youtube (−14 LUFS, défaut),
+    podcast (−16), broadcast (−23) ou off — normalisation en deux passes."""
     s = _call("GET", "/api/project")["project"]["settings"]
-    body = {"quality": quality, "encoder": encoder, "start": start,
+    body = {"quality": quality, "encoder": encoder, "start": start, "loudness": loudness,
             "width": int(s["width"] * scale) // 2 * 2, "height": int(s["height"] * scale) // 2 * 2}
     if path:
         body["path"] = path
@@ -238,7 +254,7 @@ def export_video(path: str = "", quality: str = "haute", scale: float = 1.0, sta
 
 @mcp.tool()
 def export_status() -> dict:
-    """État de l'export : idle, running (frame / frames, fps), done (path,
+    """État de l'export : idle, starting (demandé, pas encore lancé), running (frame / frames, fps), done (path,
     seconds, size_mb), cancelled ou error."""
     return _call("GET", "/api/export/status")
 
@@ -299,6 +315,18 @@ def generate_subtitles(style: str = "classique", max_words: int | None = None, m
     if save_srt:
         r["srt"] = _call("POST", "/api/subtitles/save_srt", {})["path"]
     return r
+
+
+@mcp.tool()
+def duck_music(clips: list[str], depth_db: float = -12.0, attack: float = 0.25, release: float = 0.5) -> dict:
+    """Baisse automatiquement la ou les musiques (ids de clips) pendant que quelqu'un
+    parle, en écrivant des images clés de volume sur ces clips (visibles et
+    modifiables ensuite). Les zones de voix viennent de la transcription si elle
+    existe, sinon de la forme d'onde des autres clips sonores. depth_db : de combien
+    baisser (−12 dB par défaut) ; attack / release : durée de la descente avant la
+    voix et de la remontée après (s). Relancer remplace les images clés de volume."""
+    return _call("POST", "/api/duck", {"clips": clips, "depth_db": depth_db, "attack": attack,
+                                       "release": release, "origin": "ia"})
 
 
 if __name__ == "__main__":

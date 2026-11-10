@@ -31,11 +31,15 @@ def track_of(doc, tid):
     return next((t for t in doc["tracks"] if t["id"] == tid), None)
 
 
-def video_clips_at(doc, t):
-    """Clips vidéo (média vidéo) visibles à l'instant t."""
+def video_clips_at(doc, t, sp=None):
+    """Clips vidéo (média vidéo) visibles à l'instant t, y compris pendant une transition
+    (le clip est alors prolongé dans la marge de sa source : sp = projet.spans(doc))."""
+    from .projet import spans
+    sp = sp or spans(doc)
     out = []
     for c in doc["clips"].values():
-        if c["type"] != "media" or not (c["start"] <= t < c["start"] + c["duration"]):
+        a, b = sp[c["id"]]
+        if c["type"] != "media" or not (a <= t < b):
             continue
         m = doc["media"].get(c["media"])
         tr = track_of(doc, c["track"])
@@ -70,7 +74,10 @@ class Decodeur:
         self.size = w * h * 3 // 2 if fmt == "yuv420p" else w * h * 4
         self.w, self.h = w, h
         scale = f"scale={w}:{h}:flags=bicubic" + (":out_color_matrix=bt709:out_range=tv" if fmt == "yuv420p" else "")
-        vf = f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps:.6f},{scale},format={fmt}"
+        # Marge manquante avant le début de la source (transition) : on répète la
+        # première image le temps qu'il faut, pour que la suite tombe pile au bon instant.
+        pad = f"tpad=start_duration={-ss / speed:.6f}:start_mode=clone," if ss < 0 else ""
+        vf = f"setpts=(PTS-STARTPTS)/{speed:.6f},{pad}fps={fps:.6f},{scale},format={fmt}"
         self.proc = subprocess.Popen(
             ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, ss):.6f}", "-t", f"{max_dur * speed + 1:.3f}", "-i", path,
              "-an", "-vf", vf, "-f", "rawvideo", "-"],
@@ -220,3 +227,42 @@ def encoder_command(out: Path, w: int, h: int, fps: float, duration: float, qual
     cmd += ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
             "-t", f"{duration:.6f}", "-movflags", "+faststart", str(out)]
     return cmd
+
+
+# ---------------------------------------------------------------- normalisation du volume (LUFS)
+
+LOUDNESS = {"youtube": -14.0, "podcast": -16.0, "broadcast": -23.0}
+
+
+def loudnorm_filtre(cible: float, mesure: dict | None = None) -> str:
+    base = f"loudnorm=I={cible:.1f}:TP=-1.5:LRA=11"
+    if mesure is None:
+        return base + ":print_format=json"
+    return (base + f":measured_I={mesure['input_i']}:measured_TP={mesure['input_tp']}"
+            f":measured_LRA={mesure['input_lra']}:measured_thresh={mesure['input_thresh']}"
+            f":offset={mesure['target_offset']}:linear=true:print_format=summary,aresample=48000")
+
+
+def mesurer_loudness(doc, t0: float, t1: float, cible: float, graph_file: Path) -> dict | None:
+    """Première passe : mesure le volume intégré du mixage. None si silence ou pas de son."""
+    import json as _json
+    inputs, graph, label = audio_graph(doc, t0, t1, first_input=0)
+    if not graph:
+        return None
+    graph_file.write_text(graph + f";\n[{label}]{loudnorm_filtre(cible)}[ln]", "utf-8")
+    cmd = ["ffmpeg", "-hide_banner", "-nostats"]
+    for p in inputs:
+        cmd += ["-i", p]
+    cmd += ["-/filter_complex", str(graph_file), "-map", "[ln]", "-f", "null", "-"]
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    txt = r.stderr
+    i = txt.rfind("{")
+    if r.returncode != 0 or i < 0:
+        return None
+    try:
+        m = _json.loads(txt[i:txt.index("}", i) + 1])
+        if float(m["input_i"]) < -70:   # silence : rien à normaliser
+            return None
+        return m
+    except (ValueError, KeyError):
+        return None

@@ -1,7 +1,7 @@
 // Export : la boîte de réglages, puis le rendu image par image avec le même
 // moteur que l'aperçu. Le serveur fournit les images vidéo exactes (FFmpeg) et
 // encode le résultat avec le son mixé.
-import { Rendu } from './rendu.js';
+import { Rendu, spansOf } from './rendu.js';
 import { Sources } from './sources.js';
 import { el, fmtTC, parseTC } from './widgets.js';
 
@@ -22,6 +22,8 @@ export async function openExport(app) {
   const path = el('input', { value: o.default_path, class: 'wide', spellcheck: 'false' });
   const size = el('select', {}, sizes.map(([k, l]) => el('option', { value: k }, l)));
   const quality = el('select', {}, QUALITIES.map(([v, l]) => el('option', { value: v }, l)));
+  const loudness = el('select', {}, [['youtube', 'YouTube, Spotify : -14 LUFS (recommandé)'], ['podcast', 'Podcast : -16 LUFS'],
+    ['broadcast', 'Télévision (EBU R128) : -23 LUFS'], ['off', 'Ne pas toucher au volume']].map(([v, l]) => el('option', { value: v }, l)));
   const encoder = el('select', {}, o.encoders.map(e => el('option', { value: e }, e === 'nvenc' ? 'NVIDIA NVENC (carte graphique, rapide)' : 'x264 (processeur, meilleure compression)')));
   const start = el('input', { value: fmtTC(0, fps) });
   const end = el('input', { value: fmtTC(o.duration, fps) });
@@ -37,6 +39,7 @@ export async function openExport(app) {
     el('h3', {}, 'Exporter la vidéo'),
     el('label', {}, 'Fichier de sortie', path),
     el('div', { class: 'two' }, el('label', {}, 'Résolution', size), el('label', {}, 'Qualité', quality)),
+    el('label', {}, 'Volume final', loudness),
     el('label', {}, 'Encodeur', encoder),
     o.encoders.includes('nvenc') ? null : el('p', { class: 'muted small' }, 'NVENC (encodage par la carte graphique) indisponible : pilote NVIDIA trop ancien ou absent.'),
     el('div', { class: 'two' }, el('label', {}, 'Début', start), el('label', {}, 'Fin', end)),
@@ -46,7 +49,7 @@ export async function openExport(app) {
       el('button', { class: 'primary', onclick: () => {
         const k = +size.value;
         runExport(app, { path: path.value, width: even(s.width * k), height: even(s.height * k), quality: quality.value,
-                         encoder: encoder.value, start: parseTC(start.value, fps) ?? 0, end: parseTC(end.value, fps) ?? o.duration });
+                         encoder: encoder.value, loudness: loudness.value, start: parseTC(start.value, fps) ?? 0, end: parseTC(end.value, fps) ?? o.duration });
       } }, 'Exporter'))));
   m.hidden = false;
   m.querySelectorAll('input, select').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
@@ -108,7 +111,7 @@ export function runExport(app, opts) {
       }
       const a1 = performance.now();
       job.renderer.render(job.doc, head.t, clip => (clip.type === 'media' && job.doc.media[clip.media]?.kind === 'video')
-        ? frames[clip.id] || null : job.sources.get(job.doc, clip), job.defs);
+        ? frames[clip.id] || null : job.sources.get(job.doc, clip), job.defs, job.sp);
       const gl = job.renderer.gl;
       const a2 = performance.now();
       if (job.fmt === 'yuv420p') job.renderer.readYUV(job.px);
@@ -148,7 +151,7 @@ async function prepare(app, msg) {
       const tryGet = () => (sources.get(doc, c) ? res() : setTimeout(tryGet, 30));
       tryGet();
     })));
-  return { doc, renderer, sources, defs: { ...app.builtin, ...doc.effects }, w: msg.width, h: msg.height,
+  return { doc, renderer, sources, defs: { ...app.builtin, ...doc.effects }, sp: spansOf(doc), w: msg.width, h: msg.height,
            frames: msg.frames, fmt: msg.fmt,
            px: new Uint8Array(msg.fmt === 'yuv420p' ? msg.width * msg.height * 3 / 2 : msg.width * msg.height * 4),
            timing: { attente: 0, lecture: 0, rendu: 0, readPixels: 0, envoi: 0 }, sentAt: 0 };
@@ -161,6 +164,7 @@ function finish(app, msg) {
     el('h3', {}, 'Export terminé'),
     el('p', {}, el('code', { class: 'path' }, msg.path)),
     el('p', { class: 'muted small' }, `${msg.frames} images en ${fmtDur(msg.seconds)} · ${msg.size_mb} Mo · encodeur ${msg.encoder}`),
+    msg.loudness ? el('p', { class: 'muted small' }, `Son : ${String(msg.loudness.mesure).replace('.', ',')} LUFS mesurés → ${String(msg.loudness.cible).replace('.', ',')} LUFS`) : null,
     el('div', { class: 'actions' },
       el('button', { onclick: () => fetch('/api/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: msg.path }) }) }, 'Afficher dans l\'explorateur'),
       el('button', { class: 'primary', onclick: closeModal }, 'Fermer'))));

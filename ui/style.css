@@ -188,3 +188,5 @@ small.err { color: #ff9aa6; }
 .tr-subs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tr-subs-row select { flex: 1; min-width: 0; }
 .tr-subs p { margin: 0; }
+.meter { width: 170px; height: 28px; }
+.fxicon.trans { color: #b9a3ff; }

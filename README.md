@@ -122,14 +122,43 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 - Export : le son n'est jamais mixé deux fois. Une voix **mono** sort au
   même niveau que la source (avant : −3 dB par la conversion stéréo).
 
+### Son niveau YouTube
+
+- **Volume final à l'export** : normalisation en deux passes (mesure du
+  mixage, puis correction linéaire, sans pompage). YouTube / Spotify −14 LUFS
+  (défaut), podcast −16, télévision −23, ou rien. Crête vraie limitée à
+  −1,5 dB. Vérifié : un mixage à −13,25 LUFS ressort à **−14,0 LUFS**, crête
+  −1,8 dB. Le niveau mesuré s'affiche à la fin de l'export.
+- **Musique sous la voix** : sélectionner la musique → inspecteur ou clic
+  droit → *Baisser sous la voix*. Les zones de voix viennent de la
+  transcription, sinon de la forme d'onde ; la baisse (−12 dB, descente
+  0,25 s, remontée 0,5 s) est écrite en **images clés de volume**, visibles
+  et retouchables. Copilote : `duck_music`.
+- **Vu-mètres** dans le moniteur : crêtes gauche / droite et volume perçu sur
+  3 s (LUFS, pondération K). Écart avec FFmpeg mesuré : moins de 0,5 dB.
+
+### Transitions
+
+- 8 transitions : fondu enchaîné, fondu au noir, fondu au blanc, volet,
+  poussée, zoom croisé, fondu flou, iris — plus celles que l'IA écrit
+  (`define_effect` avec `kind: "transition"`).
+- Glisser une transition de l'onglet Effets sur un point de coupe (moitié
+  gauche d'un clip : depuis le précédent ; moitié droite : vers le suivant),
+  ou clic droit → *Fondu enchaîné avec le clip précédent*. Type, durée et
+  réglages dans l'inspecteur (*Transition d'entrée*).
+- Comme dans Premiere, les deux clips se prolongent d'une demi-durée dans la
+  marge de leur source ; sans marge, l'image du bord est figée. Le son, lui,
+  coupe net au point de montage.
+- Vérifié à l'export : au milieu d'un fondu enchaîné, l'image correspond au
+  mélange 50/50 attendu (33 dB, contre 10 dB pour chaque source seule).
+
 ## Pas encore fait
 
 | Étape | Contenu |
 | --- | --- |
 | Export plus rapide | Lecture asynchrone des pixels, lots d'images ; objectif ≥ 15 images/s |
-| Transitions | Fondus enchaînés entre deux clips, transitions en shader |
 | Images d'illustration IA locale | Détection du GPU faite (`moteur/gpu.py`) ; génération à brancher, voir ci-dessous |
-| Audio avancé | Égaliseur, compression, musique qui baisse sous la voix |
+| Audio avancé | Égaliseur, compresseur, fondus croisés audio aux transitions |
 | Paquet installable | Un `.exe` (PyInstaller) pour ne plus passer par le terminal |
 
 ## Images d'illustration générées en local
