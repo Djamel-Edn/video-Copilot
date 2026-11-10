@@ -38,6 +38,12 @@ convertir une composition en clips natifs (textes, aplats, images clés).
 Le copilote ne peut pas non plus déplacer la tête de lecture ni changer la
 sélection (il les lit seulement), ni lister les polices installées.
 
+**Exécutable** : Djamel lance l'éditeur par `dist/Editeur/Editeur.exe` (raccourci
+« Éditeur vidéo » sur son Bureau). Il n'embarque que le code du moment de sa
+construction : après toute modification à livrer, relancer `construire_exe.cmd`
+(et le lui dire). Tester l'exécutable avec `--test N --port 87xx` : ce mode ne
+change pas le « dernier projet » que son raccourci rouvre.
+
 Tester sur les ports d'essai (`.claude/launch.json` : 8771, 8773-8775), jamais
 sur le 8765 : c'est souvent l'éditeur ouvert de Djamel.
 

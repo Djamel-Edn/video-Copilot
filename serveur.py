@@ -15,6 +15,7 @@ import shutil
 import struct
 import subprocess
 import re
+import sys
 import time
 import uuid
 from collections import deque
@@ -31,11 +32,16 @@ from moteur import audio, gpu, images, medias, sous_titres, texte
 from moteur.effets import BUILTIN, CONTRAT_GLSL
 from moteur.projet import OPS, OpError, Projet, duree_totale, nouveau_document, spans
 
-ROOT = Path(__file__).parent
+# Exécutable (PyInstaller) : ui/, outils/ et moteur/ sont embarqués dans sys._MEIPASS ; le dépôt
+# n'est plus à côté, donc Documents/montage se cherche depuis le dossier personnel.
+FIGE = getattr(sys, "frozen", False)
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 UI = ROOT / "ui"
+MONTAGE = Path(os.environ.get("EDITEUR_MONTAGE")
+               or (Path.home() / "Documents" / "montage" if FIGE else ROOT.parent / "montage"))
 # Images brutes de plusieurs Mo : pas de compression (trop lente), taille max relevée (4K = 33 Mo).
 # Python qui possède faster-whisper (environnement séparé : torch, CUDA…).
-_WH = ROOT.parent / "montage" / ".voice-venv" / "Scripts" / "python.exe"
+_WH = MONTAGE / ".voice-venv" / "Scripts" / "python.exe"
 WHISPER_PY = os.environ.get("EDITEUR_WHISPER_PY") or (str(_WH) if _WH.exists() else "")
 # Génération d'images : même environnement local par défaut (torch + diffusers + peft).
 IMAGE_PY = os.environ.get("EDITEUR_IMAGE_PY") or WHISPER_PY

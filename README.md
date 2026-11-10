@@ -7,6 +7,23 @@ d'un Ctrl+Z. Architecture détaillée : [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Lancer
 
+**Le plus simple : double-clic sur « Éditeur vidéo » (Bureau)**, qui lance
+`dist/Editeur/Editeur.exe` sans terminal. Il rouvre le dernier projet ouvert
+par l'exécutable ; la première fois (ou si ce projet n'existe plus), il demande
+quel dossier ouvrir. Pour un autre projet : `Editeur.exe <dossier>` (ou glisser
+le dossier sur l'exécutable). Sans console, les messages et les erreurs vont
+dans `%LOCALAPPDATA%\editeur\editeur.log`, et une erreur au démarrage s'affiche
+dans une boîte de dialogue.
+
+L'exécutable embarque le code **au moment de sa construction** : après une
+modification du code, relancer `construire_exe.cmd` (≈ 1 min, dossier `dist/`
+de 70 Mo, ignoré par git). La transcription et les images IA utilisent
+toujours `Documents/montage/.voice-venv` (ou `EDITEUR_MONTAGE`). Vérifié le
+2026-11-10 : fenêtre, WebGL2, connexion temps réel, environnement d'images
+trouvé.
+
+Depuis le code (développement) :
+
 ```bash
 cd C:/Users/erosl/Documents/editeur
 .venv/Scripts/python app_desktop.py            # fenêtre desktop (projet projets/demo)
@@ -221,7 +238,6 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 | Export plus rapide | Lecture asynchrone des pixels, lots d'images ; objectif ≥ 15 images/s |
 | Images : grands modèles | SDXL Lightning (≥ 7,5 Go) et FLUX schnell (≥ 15 Go) détectés par `moteur/gpu.py` mais pas branchés ; agrandissement ×2 |
 | Audio avancé | Égaliseur, compresseur, fondus croisés audio aux transitions |
-| Paquet installable | Un `.exe` (PyInstaller) pour ne plus passer par le terminal |
 
 Choix des modèles d'images selon la carte (`python -m moteur.gpu`) — seul le
 niveau léger est branché aujourd'hui :

@@ -4,3 +4,5 @@ __pycache__/
 projets/
 *.tmp
 tests/medias/
+build/
+dist/
