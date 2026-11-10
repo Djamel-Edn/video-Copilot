@@ -115,7 +115,7 @@ export class Sources {
         const want = Math.min(Math.max(this.target(clip, t), 0), Math.max(0, dur - 0.04));
         if (v.el.seeking || v.el.readyState < 2 || Math.abs(v.el.currentTime - want) > 0.06) ok = false;
       }
-      if (ok) { await new Promise(r => requestAnimationFrame(r)); return true; }
+      if (ok) { await uneImage(); return true; }
       await new Promise(r => setTimeout(r, 30));
     }
     return false;
@@ -182,6 +182,18 @@ export function fontStack(f) {
 function rgba(hex, a) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+
+// Laisse passer une image d'affichage (la vidéo présente l'image cherchée). Une fenêtre
+// cachée ou réduite ne produit plus d'images (requestAnimationFrame suspendu) : on
+// n'attend alors que 50 ms, sinon snapshot restait bloqué jusqu'au délai du serveur.
+export function uneImage() {
+  return new Promise(r => {
+    let fait = false;
+    const fin = () => { if (!fait) { fait = true; r(); } };
+    requestAnimationFrame(fin);
+    setTimeout(fin, 50);
+  });
 }
 
 // Dessine le texte sur un canvas plein cadre ; renvoie son rectangle {x, y, w, h} (px, origine en haut à gauche).

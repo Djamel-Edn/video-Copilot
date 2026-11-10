@@ -1,0 +1,32 @@
+# Éditeur copilote vidéo — dossier de développement
+
+Organisation décidée avec Djamel le 2026-11-10 :
+
+- **Ce dossier sert uniquement à développer le logiciel** (moteur, serveur,
+  interface, outils MCP du copilote). Architecture : [ARCHITECTURE.md](ARCHITECTURE.md),
+  fonctionnalités et état : [README.md](README.md).
+- **Les vrais montages vivent dans `Documents/montage`**, un sous-dossier par
+  vidéo ; le projet d'éditeur d'une vidéo est `montage/<projet>/assemblage/`.
+  Ne jamais créer ni modifier de projet de vidéo réel ici : `projets/` ne
+  contient que des projets d'essai (demo, essai_*).
+- Le pont `montage/outils/vers_editeur.py` parle à l'éditeur par son API HTTP
+  (`/api/project`, `/api/import`, `/api/ops`). Garder ces routes compatibles,
+  ou mettre le pont à jour dans le même temps.
+
+## Défauts trouvés pendant les montages
+
+Corrigés le 2026-11-10 (détails et mesures dans le README) :
+- proxy interrompu jamais refait → `medias.proxys_a_reprendre` au démarrage ;
+- `snapshot` bloqué fenêtre cachée → `sources.uneImage()` n'attend plus
+  indéfiniment `requestAnimationFrame`.
+
+Aucun défaut ouvert pour l'instant. En ajouter ici quand un montage en révèle.
+
+Tester sur les ports d'essai (`.claude/launch.json` : 8771, 8773-8775), jamais
+sur le 8765 : c'est souvent l'éditeur ouvert de Djamel.
+
+## Vérifier
+
+```bash
+.venv/Scripts/python -m pytest -q tests
+```

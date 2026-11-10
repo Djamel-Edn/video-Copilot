@@ -398,6 +398,14 @@ def creer_app(etat: Etat) -> FastAPI:
     async def lifespan(_app):
         async def demarrage():
             await verifier_medias(etat)
+            # Proxys perdus par un arrêt pendant leur calcul : relier ceux qui sont finis,
+            # refaire les autres (sinon la vidéo reste lue sans proxy, ou pas du tout).
+            medias.nettoyer_partiels(etat.dossier)
+            a_relier, a_refaire = medias.proxys_a_reprendre(etat.projet.doc, etat.dossier)
+            if a_relier:
+                await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": rel}
+                                    for mid, rel in a_relier.items()])
+            etat.proxys_a_refaire += [mid for mid in a_refaire if mid not in etat.proxys_a_refaire]
             for mid in etat.proxys_a_refaire:
                 m = etat.projet.doc["media"][mid]
                 await proxy(mid, Path(m["path"]), m["kind"])
@@ -495,12 +503,12 @@ def creer_app(etat: Etat) -> FastAPI:
             info["name"] = generated["prompt"][:60]
             label = f"Image IA : {generated['prompt'][:40]}"
         (mid,) = await etat.appliquer([{"op": "add_media", "media": info}], label, origin, internal=True)
-        if info["kind"] != "image" and not (info["kind"] == "audio" and info["browser_ok"]):
+        if medias.besoin_proxy(info):
             asyncio.get_running_loop().create_task(proxy(mid, path, info["kind"]))
         return mid
 
     async def proxy(mid, path, kind):
-        dst = etat.dossier / "proxies" / (f"{mid}.m4a" if kind == "audio" else f"{mid}.mp4")
+        dst = medias.chemin_proxy(etat.dossier, mid, kind)
         try:
             await asyncio.to_thread(medias.make_proxy, path, dst, kind)
             await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": str(dst.relative_to(etat.dossier))}])

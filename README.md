@@ -58,6 +58,11 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   vignettes et formes d'onde. Les vidéos de téléphone filmées à la verticale
   (image stockée couchée + consigne de rotation) sont lues à leurs vraies
   dimensions ; les projets plus anciens sont corrigés au démarrage.
+  **Proxy interrompu** (serveur arrêté pendant le calcul) : repris au
+  démarrage — relié en 1 s s'il était fini mais non enregistré, sinon
+  recalculé (8 s pour une vidéo de 22 s) ; les fichiers `.part` orphelins
+  sont supprimés. Un proxy en échec connu n'est pas relancé. Vérifié le
+  2026-11-10 en tuant le serveur pendant le calcul.
 - Timeline : déplacer (plusieurs clips, d'une piste à l'autre), rogner,
   scinder, lame, dupliquer, copier-coller, supprimer avec resserrage,
   magnétisme, verrouillage.
@@ -68,6 +73,9 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
 - **Effets sur mesure écrits par l'IA** (shaders GLSL) : compilés dans
   l'interface avant d'être acceptés ; l'erreur revient à l'IA qui corrige.
 - L'IA **voit** le résultat (`snapshot`) et sait où est ta tête de lecture.
+  La capture marche aussi fenêtre cachée ou réduite (0,25-0,65 s, au lieu
+  d'un échec à 15 s : `requestAnimationFrame` y est suspendu), à l'image
+  exacte demandée (vérifié sur le timecode incrusté d'une vidéo d'essai).
 - Outils MCP testés en session MCP réelle ; Ctrl+Z défait un lot de l'IA.
 
 ### Export MP4 (bouton Exporter ou Ctrl+M)

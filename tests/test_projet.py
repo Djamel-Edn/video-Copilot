@@ -319,3 +319,30 @@ def test_images_ia_formats_calcul_et_placement():
     new = doc["clips"][res[1]]["track"]
     subs = next(t["id"] for t in doc["tracks"] if t.get("role") == "subtitles")
     assert ids.index(new) == ids.index(subs) - 1 and not doc["clips"][res[1]]["keyframes"]
+
+
+def test_proxys_interrompus_repris_au_demarrage(tmp_path):
+    from moteur.medias import nettoyer_partiels, proxys_a_reprendre
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"x")
+    (tmp_path / "proxies").mkdir()
+    (tmp_path / "proxies" / "m1.mp4").write_bytes(b"fini")          # fini, mais non enregistré
+    (tmp_path / "proxies" / "m2.part.mp4").write_bytes(b"moitie")    # interrompu en cours d'écriture
+    (tmp_path / "proxies" / "m5.mp4").write_bytes(b"ok")
+    base = {"path": str(src), "kind": "video", "browser_ok": True}
+    doc = {"media": {
+        "m1": {**base, "proxy": None},                                 # à relier
+        "m2": {**base, "proxy": None},                                 # à refaire
+        "m3": {**base, "proxy": "proxies/m3.mp4"},                     # noté mais fichier disparu : à refaire
+        "m4": {**base, "proxy": None, "proxy_error": "codec"},         # échec connu : on ne boucle pas
+        "m5": {**base, "proxy": "proxies/m5.mp4"},                     # sain
+        "m6": {**base, "kind": "audio", "proxy": None},                # son lisible tel quel
+        "m7": {**base, "kind": "audio", "browser_ok": False, "proxy": None},
+        "m8": {**base, "path": str(tmp_path / "absent.mp4"), "proxy": None},  # source introuvable
+        "m9": {**base, "kind": "image", "proxy": None},
+    }}
+    a_relier, a_refaire = proxys_a_reprendre(doc, tmp_path)
+    assert {k: v.replace("\\", "/") for k, v in a_relier.items()} == {"m1": "proxies/m1.mp4"}
+    assert sorted(a_refaire) == ["m2", "m3", "m7"]
+    assert nettoyer_partiels(tmp_path) == 1
+    assert not (tmp_path / "proxies" / "m2.part.mp4").exists()

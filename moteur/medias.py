@@ -80,6 +80,49 @@ def proxy_command(src: Path, dst: Path, kind: str) -> list[str]:
             "-movflags", "+faststart", str(dst)]
 
 
+def chemin_proxy(dossier: Path, mid: str, kind: str) -> Path:
+    return dossier / "proxies" / (f"{mid}.m4a" if kind == "audio" else f"{mid}.mp4")
+
+
+def besoin_proxy(m: dict) -> bool:
+    """Même règle qu'à l'import : toute vidéo, et le son que le navigateur ne lit pas."""
+    return m["kind"] == "video" or (m["kind"] == "audio" and not m.get("browser_ok"))
+
+
+def proxys_a_reprendre(doc: dict, dossier: Path) -> tuple[dict[str, str], list[str]]:
+    """Proxys perdus par un arrêt du serveur, à reprendre au démarrage.
+
+    Renvoie ({média: chemin relatif d'un proxy déjà fini à relier}, [médias à refaire]).
+    Un proxy s'écrit dans « .part » puis est renommé : un fichier final présent est donc
+    complet, il manquait seulement l'enregistrement du projet (sauvegarde regroupée de 0,3 s).
+    Un proxy noté en échec (proxy_error) n'est pas relancé : il échouerait à chaque démarrage.
+    """
+    a_relier, a_refaire = {}, []
+    for mid, m in doc["media"].items():
+        if not besoin_proxy(m) or m.get("proxy_error") or not Path(m["path"]).exists():
+            continue
+        if m.get("proxy") and (dossier / m["proxy"]).exists():
+            continue
+        fini = chemin_proxy(dossier, mid, m["kind"])
+        if not m.get("proxy") and fini.exists():
+            a_relier[mid] = str(fini.relative_to(dossier))
+        else:
+            a_refaire.append(mid)
+    return a_relier, a_refaire
+
+
+def nettoyer_partiels(dossier: Path) -> int:
+    """Supprime les proxys à moitié écrits (« m3.part.mp4 ») laissés par un arrêt brutal."""
+    n = 0
+    for f in (dossier / "proxies").glob("*.part.*"):
+        try:
+            f.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def make_proxy(src: Path, dst: Path, kind: str) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.stem + ".part" + dst.suffix)
