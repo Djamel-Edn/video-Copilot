@@ -37,11 +37,17 @@ cd C:/Users/erosl/Documents/editeur
 .venv/Scripts/python serveur.py                # variante : dans le navigateur, http://127.0.0.1:8765
 ```
 
-Brancher le copilote : ouvrir Claude Code **dans ce dossier** (le fichier
-`.mcp.json` déclare le serveur `editeur`, à approuver une fois), l'éditeur
-étant lancé. Puis parler : « mets un titre sur les 4 premières secondes »,
-« fais un effet VHS sur le premier plan et un zoom lent », « coupe de 0:12 à
-0:15 et resserre ».
+Brancher le copilote : ouvrir Claude Code **dans ce dossier** ou dans
+`Documents/montage` (leur `.mcp.json` déclare le serveur `editeur`, à approuver
+une fois), l'éditeur étant lancé. Puis parler : « mets un titre sur les 4
+premières secondes », « fais un effet VHS sur le premier plan et un zoom lent »,
+« coupe de 0:12 à 0:15 et resserre ».
+
+**Sans changer de fenêtre** : dans l'app Claude (onglet Code), l'interface de
+l'éditeur s'ouvre dans le navigateur intégré, à côté de la conversation
+(`http://127.0.0.1:8765`, déclaré `editeur` dans `montage/.claude/launch.json`).
+L'éditeur accepte plusieurs interfaces à la fois : la fenêtre de l'exe et le
+volet restent synchronisés.
 
 ## L'interface
 

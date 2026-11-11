@@ -55,6 +55,14 @@ un projet (`/api/ouvrir`, bouton Projet), définir `EDITEUR_DONNEES` vers un dos
 temporaire : sinon l'essai remplace ses projets récents, et son raccourci rouvrirait
 le projet d'essai.
 
+**Pas de volet chat intégré** (décision de Djamel, 2026-11-11) : un volet « Copilote »
+construit sur le Claude Agent SDK a été abandonné, car sans accord d'Anthropic une appli
+tierce ne peut passer que par une clé API facturée à l'usage. Le copilote reste l'agent
+Claude Code qui pilote l'éditeur par le serveur MCP `editeur`. Pour ne pas changer de
+fenêtre : l'interface s'ouvre dans le navigateur intégré de l'app Claude. Le code du
+volet est gardé dans `git stash` (« Volet Copilote (Agent SDK) abandonné… »). Ne pas le
+reproposer sans que Djamel le demande.
+
 **Ouvrir un projet** (2026-11-11) : bouton « Projet » (récents, sélecteur de dossier
 Windows via `window.pywebview.api.choisir_dossier`), route `/api/ouvrir` — le projet
 courant est enregistré, l'autre chargé sans redémarrer, l'interface se recharge (les
