@@ -111,7 +111,7 @@ export function runExport(app, opts) {
       }
       const a1 = performance.now();
       job.renderer.render(job.doc, head.t, clip => (clip.type === 'media' && job.doc.media[clip.media]?.kind === 'video')
-        ? frames[clip.id] || null : job.sources.get(job.doc, clip), job.defs, job.sp);
+        ? frames[clip.id] || null : job.sources.get(job.doc, clip, head.t), job.defs, job.sp);
       const gl = job.renderer.gl;
       const a2 = performance.now();
       if (job.fmt === 'yuv420p') job.renderer.readYUV(job.px);

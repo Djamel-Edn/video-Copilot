@@ -431,3 +431,37 @@ def test_videos_transparentes(tmp_path):
     assert "libx264" in proxy_command(P("a.mp4"), P("b.mp4"), "video", {"alpha": False})
     assert chemin_proxy(tmp_path, "m1", "video", True).name == "m1.webm"
     assert chemin_proxy(tmp_path, "m1", "video").name == "m1.mp4"
+
+
+def test_reconnaitre_un_dossier_de_projet(tmp_path):
+    import serveur
+    video = tmp_path / "ma-video"
+    (video / "assemblage").mkdir(parents=True)
+    (video / "assemblage" / "project.json").write_text("{}", "utf-8")
+    assert serveur.projet_de(video) == video / "assemblage"            # dossier d'une vidéo → son assemblage
+    assert serveur.projet_de(video / "assemblage") == video / "assemblage"
+    assert serveur.projet_de(tmp_path) is None                          # ex. Documents/montage : pas un projet
+    assert serveur.nom_projet(video / "assemblage") == "ma-video"
+
+
+def test_texte_mot_a_mot_et_pistes_vides():
+    p = Projet(nouveau_document())
+    mots = [{"t": 0}, {"t": 0.1, "couleur": "#aa95ff"}, {"t": 0.2, "fin": 1.5}]
+    (cid,), _ = p.appliquer([{"op": "add_clip", "type": "text", "track": "V1", "start": 0, "duration": 2,
+                              "text": {"content": "Le paradoxe solaire", "mots": mots,
+                                       "entree": {"duree": 0.1, "dy": 30, "courbe": [0, 0.8, 1]}}}])
+    t = p.doc["clips"][cid]["text"]
+    assert t["mots"][1]["couleur"] == "#aa95ff" and t["mots"][2]["fin"] == 1.5
+    assert t["entree"]["courbe"] == [0, 0.8, 1] and t["entree"]["echelle"] == 1
+    with pytest.raises(OpError, match="couleur"):
+        p.appliquer([{"op": "update_clip", "clip": cid, "text": {"mots": [{"t": 0, "couleur": "violet"}]}}])
+    p.appliquer([{"op": "update_clip", "clip": cid, "text": {"mots": None, "entree": None}}])   # tout d'un coup
+    assert p.doc["clips"][cid]["text"]["mots"] is None
+    # Pistes : une piste pleine ne se supprime pas ; une vide oui ; la dernière vidéo reste.
+    with pytest.raises(OpError, match="contient 1 clip"):
+        p.appliquer([{"op": "delete_track", "track": "V1"}])
+    p.appliquer([{"op": "delete_track", "track": "V3"}, {"op": "delete_track", "track": "V2"}])
+    assert [t["id"] for t in p.doc["tracks"] if t["kind"] == "video"] == ["V1"]
+    p.appliquer([{"op": "delete_clip", "clip": cid}])
+    with pytest.raises(OpError, match="dernière piste"):
+        p.appliquer([{"op": "delete_track", "track": "V1"}])

@@ -123,13 +123,20 @@ def apply_ops(ops: list[dict], label: str) -> dict:
     Opérations (champ "op") :
     - add_track {kind: video|audio, name?}
     - update_track {track, name?, hidden?, muted?, locked?}
+    - delete_track {track}  : supprime une piste VIDE (refus si elle contient un clip)
     - add_clip {type: media|text|solid, media? (id), track?, start, duration?, in?,
         speed?, props?, text?, color? (#rrggbb, pour solid), name?, overwrite?: bool}
         text = {content, font (nom de police installée), size (px), weight (100-900),
                 italic, uppercase, color, align (left|center|right), line_height,
                 letter_spacing (px), stroke_color, stroke_width, shadow_color,
                 shadow_opacity (0-1), shadow_blur, shadow_x, shadow_y,
-                background (#rrggbb|null), background_opacity, padding, radius}
+                background (#rrggbb|null), background_opacity, padding, radius,
+                mots?, entree?}
+        Apparition MOT À MOT (cascade) dans UN seul clip texte : mots = [{t, fin?, couleur?}],
+        un par mot du texte (ordre de lecture, lignes comprises), t / fin en secondes depuis le
+        début du clip, couleur #rrggbb pour mettre un mot en valeur ; entree = {duree, dy (px,
+        départ sous la ligne si > 0), echelle, opacite} décrit l'arrivée de chaque mot. Préférer
+        ça à un clip par mot.
     - update_clip {clip, start?, duration?, in?, speed?, track?, props?, text?,
         color?, name?, overwrite?}
     - delete_clip {clip}

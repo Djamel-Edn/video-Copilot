@@ -22,6 +22,12 @@ toujours `Documents/montage/.voice-venv` (ou `EDITEUR_MONTAGE`). Vérifié le
 2026-11-10 : fenêtre, WebGL2, connexion temps réel, environnement d'images
 trouvé.
 
+**Changer de projet** : bouton « Projet » en haut à gauche — projets récents, ou
+« Ouvrir un dossier… ». Choisir le dossier d'une vidéo (`montage/<vidéo>`) ouvre
+son assemblage ; un dossier sans projet n'est ouvert qu'après confirmation. Le
+projet courant est enregistré avant. « Importer » refuse un `project.json` ou une
+composition HyperFrames (`.html`) en expliquant quoi faire, au lieu de les copier.
+
 Depuis le code (développement) :
 
 ```bash
@@ -82,7 +88,22 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   2026-11-10 en tuant le serveur pendant le calcul.
 - Timeline : déplacer (plusieurs clips, d'une piste à l'autre), rogner,
   scinder, lame, dupliquer, copier-coller, supprimer avec resserrage,
-  magnétisme, verrouillage.
+  magnétisme, verrouillage. Clic droit sur une piste vide (en-tête ou zone
+  vide) : la supprimer, ou toutes les pistes vides du même genre d'un coup
+  (`delete_track` pour le copilote ; une piste pleine n'est jamais supprimée).
+- **Sélection image ↔ timeline** : un clic dans « Programme » sélectionne
+  l'élément VISIBLE du dessus sous le pointeur — pour une image ou une vidéo
+  transparente, seulement là où elle a des pixels (carte de transparence
+  réduite) — et la timeline défile jusqu'à son clip. **Alt + clic** descend
+  dans la pile (plan vidéo sous un voile, fond sous un graphisme). Le cadre de
+  sélection entoure le contenu visible, pas tout le calque plein cadre.
+  Vérifié le 2026-11-11 sur la s01 en calques : 8 éléments visés, 8 trouvés.
+- **Texte mot à mot** : un seul clip texte pour une cascade de mots —
+  `text.mots` (instant d'apparition, de disparition et couleur de chaque mot)
+  et `text.entree` (durée, montée, échelle, opacité de départ, et `courbe` :
+  la progression relevée image par image). Aperçu et export identiques.
+  Mesuré face à HyperFrames : mêmes images d'apparition, textes au pixel près
+  (27-31 dB aux instants de cascade).
 - Aperçu WebGL2 : position, échelle, rotation, opacité, images clés avec
   courbes sur toute propriété et tout paramètre d'effet, 15 effets intégrés
   empilables et réordonnables, textes complets, aplats, formats 16:9, 9:16,

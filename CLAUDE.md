@@ -50,7 +50,18 @@ construction : après toute modification à livrer, relancer `construire_exe.cmd
 change pas le « dernier projet » que son raccourci rouvre.
 
 Tester sur les ports d'essai (`.claude/launch.json` : 8771, 8773-8775), jamais
-sur le 8765 : c'est souvent l'éditeur ouvert de Djamel.
+sur le 8765 : c'est souvent l'éditeur ouvert de Djamel. Pour tout essai qui ouvre
+un projet (`/api/ouvrir`, bouton Projet), définir `EDITEUR_DONNEES` vers un dossier
+temporaire : sinon l'essai remplace ses projets récents, et son raccourci rouvrirait
+le projet d'essai.
+
+**Ouvrir un projet** (2026-11-11) : bouton « Projet » (récents, sélecteur de dossier
+Windows via `window.pywebview.api.choisir_dossier`), route `/api/ouvrir` — le projet
+courant est enregistré, l'autre chargé sans redémarrer, l'interface se recharge (les
+identifiants c1, m1… se recoupent d'un projet à l'autre). Un dossier sans
+`project.json` n'est ouvert qu'après confirmation ; celui d'une vidéo ouvre son
+`assemblage/`. Origine : Djamel avait ouvert `Documents/montage` par erreur, puis
+importé `project.json` et `index.html` comme des médias.
 
 ## Vérifier
 

@@ -378,6 +378,47 @@ export function editEffect(app, d) {
   modal.querySelectorAll('input, textarea').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
 }
 
+// Projet ouvert, projets récents, ouvrir un autre dossier. Sans redémarrer : le serveur enregistre
+// le projet courant puis charge l'autre, et l'interface reçoit le nouveau projet.
+export async function openProject(app) {
+  const modal = document.getElementById('modal');
+  const p = await (await fetch('/api/projet')).json();
+  const msg = el('pre', { class: 'err' });
+  const close = () => { modal.hidden = true; modal.innerHTML = ''; };
+  const ouvrir = async (dossier, creer = false) => {
+    msg.textContent = 'Ouverture…';
+    const r = await fetch('/api/ouvrir', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ dossier, creer }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { close(); return; }
+    if (j.pas_un_projet && !creer) {
+      if (confirm(`${j.error}\n\nCréer un NOUVEAU projet vide dans ce dossier ?`)) return ouvrir(dossier, true);
+      msg.textContent = j.error; return;
+    }
+    msg.textContent = j.error || j.detail || `Erreur ${r.status}`;
+  };
+  const choisir = async () => {
+    let d = null;
+    if (window.pywebview?.api?.choisir_dossier) d = await window.pywebview.api.choisir_dossier(p.dossier);
+    else d = prompt('Chemin complet du dossier du projet (le dossier de la vidéo, ou son dossier assemblage)', p.dossier);
+    if (d) ouvrir(d);
+  };
+  modal.append(el('div', { class: 'dialog wide' },
+    el('h3', {}, 'Projet'),
+    el('label', {}, 'Projet ouvert', el('div', { class: 'projet-actuel' }, el('strong', {}, p.nom), el('small', { class: 'muted' }, p.dossier))),
+    p.recents.length ? el('label', {}, 'Récents', el('div', { class: 'recents' },
+      ...p.recents.map(r => el('button', { class: 'recent', title: r.dossier, onclick: () => ouvrir(r.dossier) },
+        el('strong', {}, r.nom), el('small', { class: 'muted' }, r.dossier))))) : null,
+    el('p', { class: 'muted small' }, "Choisis le dossier d'une vidéo (montage/<vidéo>) : son assemblage s'ouvre. "
+      + 'Le projet actuel est enregistré avant.'),
+    msg,
+    el('div', { class: 'actions' },
+      el('button', { onclick: close }, 'Fermer'),
+      el('button', { class: 'primary', onclick: choisir }, 'Ouvrir un dossier…'))));
+  modal.hidden = false;
+  modal.onclick = e => { if (e.target === modal) close(); };
+}
+
 export function openSettings(app) {
   const s = app.doc.settings, modal = document.getElementById('modal');
   const w = el('input', { type: 'number', value: s.width, min: 16, step: 2 });

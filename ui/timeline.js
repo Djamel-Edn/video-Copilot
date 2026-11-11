@@ -48,6 +48,26 @@ export class Timeline {
   x(t) { return LABEL + (t - this.scroll) * this.pps; }
   t(x) { return (x - LABEL) / this.pps + this.scroll; }
   flash(id) { this.flashes.set(id, performance.now()); this.dirty = true; }
+
+  // Fait défiler la timeline (pistes et temps) jusqu'au clip, s'il est hors de vue : un clic sur
+  // un élément de l'image « Programme » montre son clip même parmi des dizaines de pistes.
+  reveler(id) {
+    const c = this.app.doc?.clips[id];
+    if (!c) return;
+    const hView = this.cv.height / (devicePixelRatio || 1);
+    const i = this.rows().findIndex(t => t.id === c.track);
+    if (i >= 0) {
+      const y = HEAD + i * ROW;
+      if (y - this.vscroll < HEAD || y + ROW - this.vscroll > hView) {
+        const maxV = Math.max(0, HEAD + this.rows().length * ROW - hView + 20);
+        this.vscroll = Math.min(maxV, Math.max(0, y - HEAD - (hView - HEAD - ROW) / 2));
+      }
+    }
+    const x0 = this.x(c.start), x1 = this.x(c.start + c.duration);
+    if (x1 < LABEL || x0 > this.width - 20) this.scroll = Math.max(0, c.start - 0.5);
+    this.flash(id);
+    this.dirty = true;
+  }
   kind(c) { return this.app.clipKind(c); }
 
   setZoom(pps, anchorX = LABEL) {
@@ -280,7 +300,20 @@ export class Timeline {
   context(e) {
     e.preventDefault();
     const app = this.app, [px, py] = this.pos(e), h = this.hit(px, py);
-    if (!h.clip) return;
+    if (!h.clip) {
+      // Clic droit sur une piste (en-tête ou zone vide) : la supprimer si elle est vide.
+      if (!h.track) return;
+      const n = Object.values(app.doc.clips).filter(c => c.track === h.track.id).length;
+      const vides = app.doc.tracks.filter(t => t.kind === h.track.kind
+        && !Object.values(app.doc.clips).some(c => c.track === t.id));
+      contextMenu(e.clientX, e.clientY, [
+        n ? { label: `Piste ${h.track.name} : ${n} clip${n > 1 ? 's' : ''}, vide-la pour la supprimer`, action: () => {} }
+          : { label: `Supprimer la piste ${h.track.name}`, action: () => app.send([{ op: 'delete_track', track: h.track.id }], `Supprimer la piste ${h.track.name}`) },
+        ...(vides.length > 1 ? [{ label: `Supprimer les ${vides.length} pistes ${h.track.kind === 'audio' ? 'audio' : 'vidéo'} vides`,
+          action: () => app.send(vides.map(t => ({ op: 'delete_track', track: t.id })), 'Supprimer les pistes vides') }] : []),
+      ]);
+      return;
+    }
     if (!app.selection.includes(h.clip.id)) app.select(app.group(h.clip.id));
     const c = h.clip;
     const group = app.group(c.id);

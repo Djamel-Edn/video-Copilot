@@ -212,3 +212,7 @@ label.chk { display: flex; align-items: center; gap: 4px; font-size: 11.5px; }
 .img-job { display: flex; flex-direction: column; gap: 3px; }
 .img-actions { display: flex; gap: 4px; margin-top: 3px; }
 .warn { color: var(--red); }
+.dialog .projet-actuel, .dialog .recent { display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.dialog .recents { display: flex; flex-direction: column; gap: 6px; }
+.dialog .recent { padding: 8px 10px; }
+.dialog .projet-actuel small, .dialog .recent small { word-break: break-all; }

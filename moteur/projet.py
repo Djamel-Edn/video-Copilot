@@ -24,6 +24,9 @@ DEFAULT_TEXT = {
     "italic": False, "letter_spacing": 0, "uppercase": False,
     "shadow_color": "#000000", "shadow_opacity": 0.0, "shadow_blur": 12, "shadow_x": 0, "shadow_y": 4,
     "background_opacity": 1.0, "radius": 8,
+    # Apparition mot à mot (facultatif) : mots = [{t, fin?, couleur?}] dans l'ordre du texte,
+    # temps en secondes depuis le début du clip ; entree = {duree, dy, echelle, opacite}.
+    "mots": None, "entree": None,
 }
 TEXT_NUM = {"size": (1, None), "weight": (100, 900), "line_height": (0.5, 4), "stroke_width": (0, None),
             "padding": (0, None), "letter_spacing": (None, None), "shadow_opacity": (0, 1),
@@ -320,6 +323,19 @@ def op_update_track(tx, op):
     return t["id"]
 
 
+def op_delete_track(tx, op):
+    """Supprime une piste VIDE (refus sinon : on ne supprime jamais de clip par ce biais).
+    La dernière piste vidéo et la dernière piste audio sont gardées."""
+    t = _track(tx.doc, op.get("track"))
+    n = sum(c["track"] == t["id"] for c in tx.doc["clips"].values())
+    if n:
+        raise OpError(f"La piste {t['name']} contient {n} clip(s) : vide-la d'abord.")
+    if sum(x["kind"] == t["kind"] for x in tx.doc["tracks"]) <= 1:
+        raise OpError(f"C'est la dernière piste {'vidéo' if t['kind'] == 'video' else 'audio'} : elle reste.")
+    tx.set(["tracks"], [x for x in tx.doc["tracks"] if x["id"] != t["id"]])
+    return t["id"]
+
+
 def op_add_clip(tx, op):
     doc = tx.doc
     ctype = op.get("type", "media")
@@ -380,6 +396,37 @@ def op_add_clip(tx, op):
     return cid
 
 
+def _mots(v):
+    if not isinstance(v, list) or len(v) > 2000:
+        raise OpError("mots : liste de {t, fin?, couleur?}, un par mot du texte.")
+    out = []
+    for i, m in enumerate(v):
+        if not isinstance(m, dict):
+            raise OpError(f"mots[{i}] : objet {{t, fin?, couleur?}} attendu.")
+        x = {"t": _num(m.get("t", 0), f"mots[{i}].t", 0)}
+        if m.get("fin") is not None:
+            x["fin"] = _num(m["fin"], f"mots[{i}].fin", 0)
+        if m.get("couleur"):
+            x["couleur"] = _hex(m["couleur"], f"mots[{i}].couleur")
+        out.append(x)
+    return out
+
+
+def _entree(v):
+    if not isinstance(v, dict):
+        raise OpError("entree : {duree, dy, echelle, opacite}.")
+    out = {"duree": _num(v.get("duree", 0), "entree.duree", 0, 10), "dy": _num(v.get("dy", 0), "entree.dy"),
+           "echelle": _num(v.get("echelle", 1), "entree.echelle", 0.01, 20),
+           "opacite": _num(v.get("opacite", 1), "entree.opacite", 0, 1)}
+    # courbe : progression 0 → 1 de l'arrivée, une valeur par image (dépassements permis : rebond).
+    if v.get("courbe") is not None:
+        c = v["courbe"]
+        if not isinstance(c, list) or not 2 <= len(c) <= 600:
+            raise OpError("entree.courbe : liste de 2 à 600 valeurs (progression par image).")
+        out["courbe"] = [_num(x, "entree.courbe", -1, 3) for x in c]
+    return out
+
+
 def _text_fields(t):
     out = {}
     for k, v in t.items():
@@ -397,6 +444,10 @@ def _text_fields(t):
         elif k == "align":
             if v not in ("left", "center", "right"):
                 raise OpError("align : left, center ou right.")
+        elif k == "mots":
+            v = None if v is None else _mots(v)
+        elif k == "entree":
+            v = None if v is None else _entree(v)
         elif not isinstance(v, str):
             raise OpError(f"« {k} » doit être du texte.")
         out[k] = v
@@ -855,7 +906,7 @@ OPS = {
     "duplicate_clip": op_duplicate_clip, "ripple_delete": op_ripple_delete,
     "separate_audio": op_separate_audio, "set_transition": op_set_transition, "link_clips": op_link_clips, "unlink_clips": op_unlink_clips,
     "define_effect": op_define_effect, "delete_effect_def": op_delete_effect_def,
-    "update_settings": op_update_settings, "delete_media": op_delete_media,
+    "update_settings": op_update_settings, "delete_media": op_delete_media, "delete_track": op_delete_track,
 }
 INTERNAL_OPS = {**OPS, "add_media": op_add_media}
 

@@ -134,7 +134,36 @@ export class Moniteur {
     const [sw, sh] = this.app.sources.videoSize(c.id) || [m.width || W, m.height || H];
     const sa = sw / sh, fa = W / H;
     const dw = sa > fa ? W : H * sa, dh = sa > fa ? W / sa : H;
+    // Image ou vidéo transparente : seulement la partie visible (un PNG plein cadre ne doit
+    // pas s'encadrer, ni se sélectionner, sur toute l'image).
+    const carte = this.app.sources.alphaMap(doc, c);
+    if (carte?.boite) {
+      const k = dw / carte.sw, [x0, y0, x1, y1] = carte.boite;
+      return [-dw / 2 + x0 * k, -dh / 2 + y0 * k, (x1 - x0) * k, (y1 - y0) * k];
+    }
     return [-dw / 2, -dh / 2, dw, dh];
+  }
+
+  // Le point (px écran du moniteur) tombe-t-il sur un pixel visible du calque ?
+  touche(c, pt) {
+    const doc = this.app.doc, W = doc.settings.width, H = doc.settings.height;
+    const lt = localTime(this.app, c);
+    if (valueAt(c, 'opacity', lt) < 0.05) return false;
+    const carte = this.app.sources.alphaMap(doc, c);
+    if (!carte) return true;                       // vidéo opaque, texte, aplat : son rectangle suffit
+    if (!carte.boite) return false;                // entièrement transparent à cet instant
+    const p = this.props(c), a = -p.rotation * Math.PI / 180;
+    const X = pt[0] / this.cssScale - (W / 2 + p.x), Y = pt[1] / this.cssScale - (H / 2 + p.y);
+    const u = (X * Math.cos(a) - Y * Math.sin(a)) / p.scale, v = (X * Math.sin(a) + Y * Math.cos(a)) / p.scale;
+    const sa = carte.sw / carte.sh, fa = W / H;
+    const dw = sa > fa ? W : H * sa, dh = sa > fa ? W / sa : H;
+    // Petite tolérance autour du pointeur : un trait fin de 3 px reste cliquable.
+    const cx = (u + dw / 2) / dw * carte.w, cy = (v + dh / 2) / dh * carte.h;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const x = Math.round(cx + dx), y = Math.round(cy + dy);
+      if (x >= 0 && y >= 0 && x < carte.w && y < carte.h && carte.a[y * carte.w + x] > 24) return true;
+    }
+    return false;
   }
 
   props(c) {
@@ -212,22 +241,41 @@ export class Moniteur {
     return [e.clientX - r.left, e.clientY - r.top];
   }
 
-  topClipAt(pt) {
-    const doc = this.app.doc;
+  // Tous les calques visibles sous le point, du dessus vers le dessous.
+  clipsAt(pt) {
+    const doc = this.app.doc, out = [];
     const order = doc.tracks.filter(t => t.kind === 'video').map(t => t.id).reverse();
     for (const tid of order) {
       const tr = doc.tracks.find(t => t.id === tid);
       if (tr.locked) continue;
-      for (const c of Object.values(doc.clips)) if (c.track === tid && this.visible(c) && this.inside(pt, this.corners(c))) return c;
+      for (const c of Object.values(doc.clips)) {
+        if (c.track === tid && this.visible(c) && this.inside(pt, this.corners(c)) && this.touche(c, pt)) out.push(c);
+      }
     }
-    return null;
+    return out;
   }
+
+  topClipAt(pt) { return this.clipsAt(pt)[0] || null; }
 
   down(e) {
     const app = this.app;
     if (!app.doc) return;
     const pt = this.pos(e);
+    // Alt + clic : l'élément juste EN DESSOUS de la sélection à cet endroit (pour atteindre un
+    // plan vidéo recouvert par un voile, un fond sous un graphisme…). Chaque Alt + clic descend.
+    if (e.altKey) {
+      const pile = this.clipsAt(pt);
+      if (!pile.length) return;
+      const i = pile.findIndex(x => app.selection.includes(x.id));
+      const c2 = pile[(i + 1) % pile.length];
+      app.select([c2.id]);
+      this.choixAlt = c2.id;           // reste déplaçable tant qu'on clique sur lui
+      app.timeline.reveler(c2.id);
+      app.toast?.(`${c2.name}  ·  ${pile.indexOf(c2) + 1}/${pile.length} sous le pointeur (Alt + clic : suivant)`);
+      return;
+    }
     let c = null, mode = null;
+    // Poignées de la sélection d'abord (échelle, rotation).
     for (const id of app.selection) {
       const cc = app.doc.clips[id];
       if (!cc || !this.visible(cc)) continue;
@@ -235,12 +283,21 @@ export class Moniteur {
       const r = this.rotHandle(pts);
       if (Math.hypot(pt[0] - r[0], pt[1] - r[1]) < 8) { c = cc; mode = 'rotate'; break; }
       if (pts.some(([x, y]) => Math.hypot(pt[0] - x, pt[1] - y) < 8)) { c = cc; mode = 'scale'; break; }
-      if (this.inside(pt, pts)) { c = cc; mode = 'move'; break; }
+    }
+    // Sinon : l'élément visible du DESSUS sous le pointeur (un calque plein cadre sélectionné ne
+    // doit pas capter tous les clics) — sauf celui choisi par Alt + clic, qu'on peut déplacer.
+    if (!c) {
+      const pile = this.clipsAt(pt);
+      const alt = pile.find(x => x.id === this.choixAlt && app.selection.includes(x.id));
+      const dessus = alt || pile[0];
+      if (dessus && app.selection.includes(dessus.id)) { c = dessus; mode = 'move'; }
     }
     if (!c) {
+      this.choixAlt = null;
       c = this.topClipAt(pt);
       app.select(c ? [c.id] : []);
       if (!c) return;
+      app.timeline.reveler(c.id);      // le clip choisi dans l'image est montré dans la timeline
       mode = 'move';
     }
     if (app.doc.tracks.find(t => t.id === c.track)?.locked) return;

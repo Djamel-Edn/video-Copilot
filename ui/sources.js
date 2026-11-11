@@ -123,13 +123,53 @@ export class Sources {
 
   textBounds(id) { return this.texts.get(id)?.bounds || null; }
 
+  // Carte de transparence réduite (≤ 320 px) d'une image ou d'une vidéo transparente, avec le
+  // rectangle de son contenu visible : le moniteur s'en sert pour encadrer CE QUI SE VOIT d'un
+  // calque plein cadre (PNG, vidéo alpha) et pour savoir si un clic tombe sur lui.
+  alphaMap(doc, clip) {
+    if (clip.type !== 'media') return null;
+    const m = doc.media[clip.media];
+    if (!m || !(m.kind === 'image' || (m.kind === 'video' && m.alpha))) return null;
+    let el, cle;
+    if (m.kind === 'image') {
+      if (!this.images.get(m.id)) this.get(doc, clip);       // crée l'image si elle n'a jamais été dessinée
+      const im = this.images.get(m.id);
+      if (!im?.el.complete || !im.el.naturalWidth) return null;
+      el = im.el; cle = 'i:' + m.id;
+    } else {
+      const v = this.videos.get(clip.id);
+      if (!v || v.el.readyState < 2) return null;
+      el = v.el; cle = `v:${clip.id}:${v.el.currentTime.toFixed(3)}`;
+    }
+    this.cartes ||= new Map();
+    const deja = this.cartes.get(clip.id);
+    if (deja?.cle === cle) return deja;
+    const sw = el.naturalWidth || el.videoWidth, sh = el.naturalHeight || el.videoHeight;
+    const k = Math.min(1, 320 / Math.max(sw, sh)), w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
+    const cv = this._carte ||= document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.clearRect(0, 0, w, h);
+    g.drawImage(el, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data, a = new Uint8Array(w * h);
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const v = px[(y * w + x) * 4 + 3];
+      a[y * w + x] = v;
+      if (v > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    const carte = { cle, w, h, sw, sh, a, boite: x1 < 0 ? null : [x0 / k, y0 / k, (x1 + 1) / k, (y1 + 1) / k] };
+    this.cartes.set(clip.id, carte);
+    return carte;
+  }
+
   videoSize(id) {
     const v = this.videos.get(id);
     return v && v.el.videoWidth ? [v.el.videoWidth, v.el.videoHeight] : null;
   }
 
   // Fournit au moteur de rendu la source d'un clip, ou null si pas prête.
-  get(doc, clip) {
+  get(doc, clip, t = null) {
     const W = doc.settings.width, H = doc.settings.height;
     if (clip.type === 'media') {
       const m = doc.media[clip.media];
@@ -154,10 +194,13 @@ export class Sources {
       return null;
     }
     if (clip.type === 'text') {
-      const key = JSON.stringify(clip.text) + W + 'x' + H;
+      // Texte mot à mot : l'image dépend de l'instant (mots déjà apparus, entrée en cours).
+      const lt = t === null ? null : t - clip.start;
+      const etat = clip.text.mots?.length && lt !== null ? etatMots(clip.text, lt).map(e => e.cle).join('') : '';
+      const key = JSON.stringify(clip.text) + W + 'x' + H + etat;
       let s = this.texts.get(clip.id);
       if (!s) { s = { canvas: document.createElement('canvas'), key: null }; this.texts.set(clip.id, s); }
-      if (s.key !== key) { s.bounds = drawText(s.canvas, clip.text, W, H); s.key = key; }
+      if (s.key !== key) { s.bounds = drawText(s.canvas, clip.text, W, H, lt); s.key = key; }
       return { id: 't:' + clip.id, el: s.canvas, w: W, h: H, key };
     }
     if (clip.type === 'solid') {
@@ -197,7 +240,31 @@ export function uneImage() {
 }
 
 // Dessine le texte sur un canvas plein cadre ; renvoie son rectangle {x, y, w, h} (px, origine en haut à gauche).
-export function drawText(cv, tx, W, H) {
+// Apparition mot à mot : pour chaque mot (dans l'ordre du texte, lignes comprises), visible ou
+// non à l'instant lt du clip, et où il en est de son entrée. tx.mots[i] = {t, fin?, couleur?} ;
+// tx.entree = {duree, dy, echelle, opacite} (état de départ d'un mot, ramené à l'état final).
+// Un mot sans entrée dans tx.mots (texte modifié depuis) est affiché dès le début du clip.
+export function etatMots(tx, lt) {
+  const n = String(tx.content).split(/\s+/).filter(Boolean).length;
+  const en = tx.entree || {};
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const m = tx.mots?.[i] || { t: 0 };
+    if (lt < (m.t || 0) - 1e-6 || (m.fin != null && lt >= m.fin - 1e-6)) { out.push({ vis: false, cle: '0' }); continue; }
+    const p = en.duree > 0 ? Math.min(1, (lt - (m.t || 0)) / en.duree) : 1;
+    // Courbe d'arrivée relevée sur la composition d'origine (une valeur par image), sinon
+    // décélération générique.
+    let e;
+    if (en.courbe?.length > 1) {
+      const q = p * (en.courbe.length - 1), i0 = Math.floor(q), i1 = Math.min(en.courbe.length - 1, i0 + 1);
+      e = en.courbe[i0] + (en.courbe[i1] - en.courbe[i0]) * (q - i0);
+    } else e = 1 - (1 - p) ** 3;
+    out.push({ vis: true, e, couleur: m.couleur, cle: p >= 1 ? '1' : `(${p.toFixed(2)})` });
+  }
+  return out;
+}
+
+export function drawText(cv, tx, W, H, lt = null) {
   cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
   g.clearRect(0, 0, W, H);
@@ -231,18 +298,44 @@ export function drawText(cv, tx, W, H) {
     g.shadowOffsetX = on ? tx.shadow_x : 0;
     g.shadowOffsetY = on ? tx.shadow_y : 0;
   };
-  lines.forEach((l, i) => {
-    const y = y0 + i * lh;
+  const trace = (s, xx, y, couleur) => {
     if (tx.stroke_width > 0) {
       setShadow(shadow);
       g.lineJoin = 'round';
       g.lineWidth = tx.stroke_width * 2;
       g.strokeStyle = tx.stroke_color;
-      g.strokeText(l, x, y);
+      g.strokeText(s, xx, y);
     }
     setShadow(shadow && !(tx.stroke_width > 0));
-    g.fillStyle = tx.color;
-    g.fillText(l, x, y);
-  });
+    g.fillStyle = couleur || tx.color;
+    g.fillText(s, xx, y);
+  };
+  if (tx.mots?.length && lt !== null) {
+    // Mot à mot : chaque mot à sa place dans la ligne (mesurée avec ce qui le précède), dessiné
+    // seulement s'il est apparu, avec son entrée (montée, échelle, opacité) et sa couleur.
+    const etats = etatMots(tx, lt), en = tx.entree || {};
+    g.textAlign = 'left';
+    let k = 0;
+    lines.forEach((l, i) => {
+      const y = y0 + i * lh;
+      const lw = g.measureText(l).width;
+      const gauche = tx.align === 'left' ? x : tx.align === 'right' ? x - lw : x - lw / 2;
+      for (const m of l.matchAll(/\S+/g)) {
+        const st = etats[k++];
+        if (!st?.vis) continue;
+        const wx = gauche + g.measureText(l.slice(0, m.index)).width;
+        const ww = g.measureText(m[0]).width;
+        const sc = (en.echelle ?? 1) + (1 - (en.echelle ?? 1)) * st.e;
+        g.save();
+        g.globalAlpha = (en.opacite ?? 1) + (1 - (en.opacite ?? 1)) * st.e;
+        g.translate(wx + ww / 2, y + (en.dy || 0) * (1 - st.e));
+        g.scale(sc, sc);
+        trace(m[0], -ww / 2, 0, st.couleur);
+        g.restore();
+      }
+    });
+    return box;
+  }
+  lines.forEach((l, i) => trace(l, x, y0 + i * lh));
   return box;
 }

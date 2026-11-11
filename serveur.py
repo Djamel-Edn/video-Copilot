@@ -49,21 +49,72 @@ PERF_IMAGES = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "editeur" / 
 UVICORN_WS = {"ws_per_message_deflate": False, "ws_max_size": 256 * 1024 * 1024}
 
 
+# Données de l'utilisateur (projets récents…). EDITEUR_DONNEES les redirige pendant les essais,
+# pour qu'un test n'écrase pas la liste des projets que l'exécutable rouvre.
+DONNEES = Path(os.environ.get("EDITEUR_DONNEES") or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "editeur")
+RECENTS = DONNEES / "recents.json"
+
+
+def projet_de(dossier: Path) -> Path | None:
+    """Le dossier de projet à ouvrir pour ce choix, ou None si ce n'en est pas un. Choisir le
+    dossier d'une vidéo (montage/<vidéo>) ouvre son assemblage."""
+    if (dossier / "project.json").is_file():
+        return dossier
+    if (dossier / "assemblage" / "project.json").is_file():
+        return dossier / "assemblage"
+    return None
+
+
+def nom_projet(dossier: Path) -> str:
+    """« paradoxe-creme-solaire » plutôt que « assemblage » pour l'assemblage d'une vidéo."""
+    return dossier.parent.name if dossier.name == "assemblage" else dossier.name
+
+
+def recents() -> list[str]:
+    try:
+        return [p for p in json.loads(RECENTS.read_text("utf-8")) if (Path(p) / "project.json").is_file()]
+    except (OSError, ValueError):
+        return []
+
+
+def memoriser_projet(dossier: Path) -> None:
+    """Projets récents (le premier est rouvert par le double-clic de l'exécutable)."""
+    try:
+        DONNEES.mkdir(parents=True, exist_ok=True)
+        liste = [str(dossier)] + [p for p in recents() if Path(p) != dossier]
+        RECENTS.write_text(json.dumps(liste[:8], ensure_ascii=False, indent=1), "utf-8")
+        (DONNEES / "dernier_projet.txt").write_text(str(dossier), "utf-8")
+    except OSError:
+        pass
+
+
 class Etat:
     def __init__(self, dossier: Path, port: int):
-        self.dossier = dossier
         self.port = port
+        self.clients: set[WebSocket] = set()
+        self.attente: dict[str, asyncio.Future] = {}
+        self._save_task: asyncio.Task | None = None
+        self.export: dict = {"state": "idle"}
+        self.charger(dossier)
+        self.images = GenerateurImages(self)
+
+    def charger(self, dossier: Path):
+        """(Re)charge un projet dans cet état : au démarrage, et quand l'utilisateur en ouvre un autre."""
+        self.dossier = dossier
         self.fichier = dossier / "project.json"
         doc = json.loads(self.fichier.read_text("utf-8")) if self.fichier.exists() else nouveau_document()
         self.projet = Projet(doc)
-        self.clients: set[WebSocket] = set()
-        self.attente: dict[str, asyncio.Future] = {}
-        self.ui_state: dict = {"playhead": 0.0, "selection": [], "playing": False}
-        self._save_task: asyncio.Task | None = None
-        self.export: dict = {"state": "idle"}
-        self.cache_mots: dict = {}
+        self.ui_state = {"playhead": 0.0, "selection": [], "playing": False}
+        self.cache_mots = {}
         self.proxys_a_refaire: list[str] = []
-        self.images = GenerateurImages(self)
+
+    async def ecrire_maintenant(self):
+        """Sauvegarde immédiate (avant de changer de projet : rien ne doit se perdre)."""
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
+        tmp = self.fichier.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.projet.doc, ensure_ascii=False, indent=1), "utf-8")
+        os.replace(tmp, self.fichier)
 
     # --- persistance (écriture atomique, regroupée) ---
     def planifier_sauvegarde(self):
@@ -400,27 +451,65 @@ async def verifier_medias(etat: Etat):
 
 
 def creer_app(etat: Etat) -> FastAPI:
+    async def demarrage():
+        """À l'ouverture d'un projet : anciens médias relus, proxys perdus repris."""
+        await verifier_medias(etat)
+        # Proxys perdus par un arrêt pendant leur calcul : relier ceux qui sont finis,
+        # refaire les autres (sinon la vidéo reste lue sans proxy, ou pas du tout).
+        medias.nettoyer_partiels(etat.dossier)
+        a_relier, a_refaire = medias.proxys_a_reprendre(etat.projet.doc, etat.dossier)
+        if a_relier:
+            await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": rel}
+                                for mid, rel in a_relier.items()])
+        etat.proxys_a_refaire += [mid for mid in a_refaire if mid not in etat.proxys_a_refaire]
+        for mid in list(etat.proxys_a_refaire):
+            m = etat.projet.doc["media"][mid]
+            await proxy(mid, Path(m["path"]), m["kind"])
+
     @asynccontextmanager
     async def lifespan(_app):
-        async def demarrage():
-            await verifier_medias(etat)
-            # Proxys perdus par un arrêt pendant leur calcul : relier ceux qui sont finis,
-            # refaire les autres (sinon la vidéo reste lue sans proxy, ou pas du tout).
-            medias.nettoyer_partiels(etat.dossier)
-            a_relier, a_refaire = medias.proxys_a_reprendre(etat.projet.doc, etat.dossier)
-            if a_relier:
-                await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": rel}
-                                    for mid, rel in a_relier.items()])
-            etat.proxys_a_refaire += [mid for mid in a_refaire if mid not in etat.proxys_a_refaire]
-            for mid in etat.proxys_a_refaire:
-                m = etat.projet.doc["media"][mid]
-                await proxy(mid, Path(m["path"]), m["kind"])
         asyncio.get_running_loop().create_task(demarrage())
         yield
         await etat.images.arreter()
 
     app = FastAPI(title="editeur", lifespan=lifespan)
     origines = {f"http://127.0.0.1:{etat.port}", f"http://localhost:{etat.port}"}
+
+    # ------------------------------------------------------------ projet ouvert, changer de projet
+    @app.get("/api/projet")
+    async def projet_ouvert():
+        return {"dossier": str(etat.dossier), "nom": nom_projet(etat.dossier),
+                "recents": [{"dossier": p, "nom": nom_projet(Path(p))} for p in recents() if Path(p) != etat.dossier]}
+
+    @app.post("/api/ouvrir")
+    async def ouvrir(body: dict):
+        """Ouvre un autre projet sans redémarrer. Un dossier sans project.json n'est pas ouvert
+        (sauf creer: true) : ouvrir par erreur Documents/montage y aurait créé un projet vide."""
+        brut = str(body.get("dossier") or "").strip().strip('"')
+        if not brut:
+            raise HTTPException(400, "Donne le dossier du projet.")
+        d = Path(brut).expanduser()
+        if not d.is_absolute():
+            raise HTTPException(400, "Donne un chemin complet (ex. C:\\Users\\…\\assemblage).")
+        cible = projet_de(d) if d.is_dir() else None
+        if cible is None:
+            if not body.get("creer"):
+                return JSONResponse({"ok": False, "pas_un_projet": True, "dossier": str(d),
+                                     "error": f"« {d} » ne contient pas de projet (project.json)."}, status_code=404)
+            d.mkdir(parents=True, exist_ok=True)
+            cible = d
+        cible = cible.resolve()
+        if cible == etat.dossier.resolve():
+            return {"ok": True, "dossier": str(cible), "nom": nom_projet(cible), "deja": True}
+        if etat.export.get("state") in ("starting", "running"):
+            raise HTTPException(409, "Un export est en cours : attends sa fin pour changer de projet.")
+        await etat.ecrire_maintenant()
+        await etat.images.arreter()
+        etat.charger(cible)
+        memoriser_projet(cible)
+        await etat.diffuser({**etat.snapshot_msg(), "projet": {"dossier": str(cible), "nom": nom_projet(cible)}})
+        asyncio.get_running_loop().create_task(demarrage())
+        return {"ok": True, "dossier": str(cible), "nom": nom_projet(cible)}
 
     @app.middleware("http")
     async def garde_origine(request: Request, call_next):
@@ -573,18 +662,39 @@ def creer_app(etat: Etat) -> FastAPI:
         p = Path(body.get("path", "")).expanduser()
         if not p.is_file():
             raise HTTPException(404, f"Fichier introuvable : {p}")
+        refus = pas_un_media(p.name)
+        if refus:
+            raise HTTPException(400, refus)
         mid = await importer(p)
         return {"ok": True, "media": etat.projet.doc["media"][mid]}
 
+    def pas_un_media(nom: str) -> str | None:
+        """Fichiers qu'on glisse ou importe par erreur : on explique au lieu de les copier."""
+        n = nom.lower()
+        if n == "project.json" or n.endswith(".json"):
+            return ("C'est un fichier de projet, pas un média : ouvre-le avec le bouton « Projet » "
+                    "(choisis le dossier qui le contient).")
+        if n.endswith((".html", ".htm")):
+            return ("C'est une composition HyperFrames : passe-la par le pont "
+                    "(montage/outils/vers_editeur.py <scène> --calques), qui en fait des clips.")
+        return None
+
     @app.post("/api/upload")
     async def upload(file: UploadFile = File(...)):
+        refus = pas_un_media(file.filename or "")
+        if refus:
+            raise HTTPException(400, refus)
         dest = etat.dossier / "media" / Path(file.filename or "media.bin").name
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             dest = dest.with_name(f"{dest.stem}_{uuid.uuid4().hex[:6]}{dest.suffix}")
         with dest.open("wb") as f:
             shutil.copyfileobj(file.file, f)
-        mid = await importer(dest)
+        try:
+            mid = await importer(dest)
+        except HTTPException:
+            dest.unlink(missing_ok=True)     # illisible : ne pas laisser la copie traîner dans media/
+            raise
         return {"ok": True, "media": etat.projet.doc["media"][mid]}
 
     @app.get("/media/{mid}")

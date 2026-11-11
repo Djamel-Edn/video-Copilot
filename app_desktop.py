@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 FIGE = getattr(sys, "frozen", False)
-DONNEES = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "editeur"
+DONNEES = Path(os.environ.get("EDITEUR_DONNEES") or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "editeur")
 JOURNAL = DONNEES / "editeur.log"
 DERNIER = DONNEES / "dernier_projet.txt"
 
@@ -60,7 +60,10 @@ def est_un_editeur(port: int) -> bool:
 
 
 def choisir_projet() -> Path | None:
-    """Dernier projet ouvert s'il existe encore, sinon un dossier à choisir."""
+    """Dernier projet ouvert s'il existe encore, sinon un dossier à choisir. Un dossier sans
+    projet n'est pas ouvert sans confirmation ; celui d'une vidéo ouvre son assemblage."""
+    for p in serveur.recents():
+        return Path(p)
     try:
         p = Path(DERNIER.read_text("utf-8").strip())
         if (p / "project.json").exists():
@@ -68,14 +71,39 @@ def choisir_projet() -> Path | None:
     except OSError:
         pass
     import tkinter
-    from tkinter import filedialog
+    from tkinter import filedialog, messagebox
     racine = tkinter.Tk()
     racine.withdraw()
     depart = serveur.MONTAGE if serveur.MONTAGE.exists() else Path.home()
-    choix = filedialog.askdirectory(title="Dossier du projet à ouvrir (ex. montage/<vidéo>/assemblage)",
-                                    initialdir=str(depart), mustexist=False)
+    while True:
+        choix = filedialog.askdirectory(title="Projet à ouvrir : le dossier de la vidéo, ou son dossier assemblage",
+                                        initialdir=str(depart), mustexist=True)
+        if not choix:
+            racine.destroy()
+            return None
+        cible = serveur.projet_de(Path(choix))
+        if cible is not None:
+            break
+        if messagebox.askyesno("Éditeur", f"« {choix} » ne contient pas de projet.\n\nCréer un NOUVEAU projet vide dans ce dossier ?"):
+            cible = Path(choix)
+            break
     racine.destroy()
-    return Path(choix) if choix else None
+    return cible
+
+
+class Api:
+    """Fonctions de la fenêtre appelées par l'interface (window.pywebview.api.…)."""
+
+    def __init__(self):
+        self._win = None     # privé (« _ ») : pywebview publierait sinon tout l'objet fenêtre natif
+
+    def choisir_dossier(self, depart: str = ""):
+        typ = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or getattr(webview, "FOLDER_DIALOG", 20)
+        r = self._win.create_file_dialog(typ, directory=depart or str(serveur.MONTAGE))
+        return r[0] if r else None
+
+    def titre(self, texte: str):
+        self._win.set_title(texte)
 
 
 def main():
@@ -85,7 +113,11 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("EDITEUR_PORT", 8765)))
     ap.add_argument("--test", type=float, default=0, help="ferme la fenêtre après N s (vérification)")
     a = ap.parse_args()
-    dossier = Path(a.dossier).resolve() if a.dossier else choisir_projet()
+    if a.dossier:
+        dossier = Path(a.dossier).resolve()
+        dossier = serveur.projet_de(dossier) or dossier     # dossier d'une vidéo → son assemblage
+    else:
+        dossier = choisir_projet()
     if dossier is None:
         return
     srv = None
@@ -101,15 +133,11 @@ def main():
                 message(f"Le serveur de l'éditeur n'a pas démarré en 30 s.\nJournal : {JOURNAL}")
                 return
             time.sleep(0.05)
-        titre = f"Éditeur — {dossier.name}"
+        titre = f"Éditeur — {serveur.nom_projet(dossier)}"
         # Seul l'exécutable retient le dernier projet (son double-clic le rouvre) ; un lancement
         # de développement ou de test ne doit pas changer ce que le raccourci ouvre.
         if FIGE and a.test == 0:
-            try:
-                DONNEES.mkdir(parents=True, exist_ok=True)
-                DERNIER.write_text(str(dossier), "utf-8")
-            except OSError:
-                pass
+            serveur.memoriser_projet(dossier)
     elif est_un_editeur(a.port):
         # Un éditeur tourne déjà (ex. serveur.py) : on ouvre juste une fenêtre dessus.
         print(f"Un éditeur tourne déjà sur le port {a.port} : ouverture d'une fenêtre sur ce projet.")
@@ -118,8 +146,10 @@ def main():
         message(f"Le port {a.port} est pris par un autre programme.\n"
                 f"Relance avec : Editeur.exe --port 8770")
         return
-    win = webview.create_window(titre, f"http://127.0.0.1:{a.port}",
+    api = Api()
+    win = webview.create_window(titre, f"http://127.0.0.1:{a.port}", js_api=api,
                                 width=1600, height=960, min_size=(1100, 700), background_color="#111317")
+    api._win = win
 
     def verifier():
         time.sleep(a.test)

@@ -5,7 +5,7 @@ import { Timeline } from './timeline.js';
 import { Inspecteur } from './inspecteur.js';
 import { Moniteur } from './moniteur.js';
 import { Mixeur } from './audio.js';
-import { Panneaux, TEXT_PRESETS, openSettings } from './panneaux.js';
+import { Panneaux, TEXT_PRESETS, openSettings, openProject } from './panneaux.js';
 import { el } from './widgets.js';
 import { openExport, runExport } from './export.js';
 
@@ -67,12 +67,17 @@ class App {
 
   onMessage(msg) {
     if (msg.type === 'snapshot') {
+      // Un autre projet vient d'être ouvert : ses identifiants (c1, m1…) recoupent ceux de
+      // l'ancien, dont les vidéos, textures et formes d'onde sont encore en mémoire. On repart
+      // d'une page neuve plutôt que de risquer d'afficher une image de l'ancien projet.
+      if (msg.projet) { location.reload(); return; }
       this.doc = msg.project;
       this.builtin = msg.builtin_effects;
       this.journal = msg.journal;
       this.monitor.fit();
       this.timeline.fitAll();
       this.refreshAll(true);
+      this.showProjectName();
     } else if (msg.type === 'patch') {
       for (const p of msg.patches) applyPatch(this.doc, p);
       const roots = new Set(msg.patches.map(p => p.path[0]));
@@ -304,7 +309,7 @@ class App {
 
   draw() {
     this.dirty = false;
-    this.renderer.render(this.doc, this.playhead, c => this.sources.get(this.doc, c), this.defs(), this.spans());
+    this.renderer.render(this.doc, this.playhead, c => this.sources.get(this.doc, c, this.playhead), this.defs(), this.spans());
   }
 
   // ------------------------------------------------------------ actions
@@ -432,6 +437,17 @@ class App {
 
   openSettings() { openSettings(this); }
 
+  // Nom du projet dans le titre de la fenêtre (et sur le bouton Projet).
+  async showProjectName() {
+    try {
+      const p = await (await fetch('/api/projet')).json();
+      document.title = `Éditeur — ${p.nom}`;
+      $('#projet').textContent = `Projet : ${p.nom}`;
+      $('#projet').title = `${p.dossier}\nOuvrir un autre projet ou un projet récent`;
+      window.pywebview?.api?.titre?.(document.title);
+    } catch { /* hors ligne */ }
+  }
+
   aiPulse() {
     const b = $('#ai');
     b.classList.remove('pulse'); void b.offsetWidth; b.classList.add('pulse');
@@ -450,6 +466,7 @@ class App {
     $('#undo').onclick = () => this.sendRaw({ type: 'undo' });
     $('#redo').onclick = () => this.sendRaw({ type: 'redo' });
     $('#settings').onclick = () => this.openSettings();
+    $('#projet').onclick = () => openProject(this);
     $('#export').onclick = () => openExport(this);
     $('#import').onchange = e => this.upload(e.target.files);
     for (const b of document.querySelectorAll('[data-tool]')) b.onclick = () => this.setTool(b.dataset.tool);
