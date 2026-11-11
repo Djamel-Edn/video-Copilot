@@ -32,10 +32,15 @@ Mis en conformité avec la règle de conception le 2026-11-10 : suppression des
 médias, gestion des effets sur mesure depuis le panneau Effets, sous-titres
 retouchés gardés à la régénération, groupes liés de plus de deux clips.
 
-Encore ouvert : **les graphiques des rendus HyperFrames sont intégrés à une
-seule vidéo** ; titres et chiffres ne se modifient pas dans l'éditeur. Piste :
-convertir une composition en clips natifs (textes, aplats, images clés).
-Le copilote ne peut pas non plus déplacer la tête de lecture ni changer la
+2026-11-11 : les scènes HyperFrames se **décomposent en calques**
+(`montage/outils/decomposer.mjs` + `vers_editeur.py --calques`) : un élément
+visible = un clip (vidéo d'origine, texte natif, PNG, ou vidéo transparente),
+avec ses images clés. Ce dépôt y a gagné les vidéos transparentes et les
+polices de projet. Limite connue : un caractère absent du découpage d'une
+police (ex. « → » en Outfit 600) peut tomber sur une autre police de secours
+que dans le navigateur.
+
+Le copilote ne peut pas déplacer la tête de lecture ni changer la
 sélection (il les lit seulement), ni lister les polices installées.
 
 **Exécutable** : Djamel lance l'éditeur par `dist/Editeur/Editeur.exe` (raccourci

@@ -203,10 +203,32 @@ class App {
   }
 
   async loadFonts() {
+    let projet = [];
+    try { projet = await this.loadProjectFonts(); } catch { /* pas de polices de projet */ }
     try {
       const { fonts } = await (await fetch('/api/fonts')).json();
-      $('#fontlist').replaceChildren(...fonts.map(f => el('option', { value: f })));
+      const toutes = [...new Set([...projet, ...fonts])];
+      $('#fontlist').replaceChildren(...toutes.map(f => el('option', { value: f })));
     } catch { /* liste par défaut du navigateur */ }
+  }
+
+  // Polices du projet (dossier polices/ du projet, décrit par polices.json) : chargées dans la
+  // page, donc utilisées par l'aperçu ET par l'export, sans rien installer dans Windows. Un même
+  // nom de famille peut avoir plusieurs fichiers (graisses, découpages par jeu de caractères).
+  async loadProjectFonts() {
+    const { polices } = await (await fetch('/api/polices')).json();
+    if (!polices.length) return [];
+    const faces = polices.map(p => {
+      const opts = { weight: String(p.weight || 400), style: p.style || 'normal' };
+      if (p.unicodeRange) opts.unicodeRange = p.unicodeRange;
+      const f = new FontFace(p.family, `url("${p.url}")`, opts);
+      document.fonts.add(f);
+      return f;
+    });
+    await Promise.allSettled(faces.map(f => f.load()));
+    this.sources.texts.clear();      // textes déjà dessinés avec une police de remplacement
+    this.dirty = true;
+    return [...new Set(polices.map(p => p.family))];
   }
 
   // ------------------------------------------------------------ lecture

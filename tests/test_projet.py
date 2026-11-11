@@ -413,3 +413,21 @@ def test_sous_titres_d_avant_les_empreintes_remplaces():
     p.appliquer(anciens)
     ops = st.ops(p.doc, caps, "shorts")
     assert ops.gardes == 0 and sum(o["op"] == "delete_clip" for o in ops) == len(caps)
+
+
+def test_videos_transparentes(tmp_path):
+    from pathlib import Path as P
+    from moteur.medias import alpha_flux, chemin_proxy, options_decodage, proxy_command
+    assert alpha_flux({"pix_fmt": "yuva444p12le", "codec_name": "prores"})
+    assert alpha_flux({"pix_fmt": "rgba", "codec_name": "png"})
+    assert alpha_flux({"pix_fmt": "yuv420p", "codec_name": "vp9", "tags": {"ALPHA_MODE": "1"}})   # WebM : étiquette
+    assert not alpha_flux({"pix_fmt": "yuv420p", "codec_name": "h264"})
+    assert not alpha_flux({"pix_fmt": "yuv420p", "codec_name": "vp9", "tags": {}})
+    m = {"alpha": True, "codec": "vp9"}
+    assert options_decodage(m) == ["-c:v", "libvpx-vp9"]            # sinon FFmpeg perd la couche alpha
+    assert options_decodage({"alpha": False, "codec": "vp9"}) == []
+    cmd = proxy_command(P("a.webm"), P("b.webm"), "video", m)
+    assert "libvpx-vp9" in cmd and "yuva420p" in cmd and cmd.index("-c:v") < cmd.index("-i")
+    assert "libx264" in proxy_command(P("a.mp4"), P("b.mp4"), "video", {"alpha": False})
+    assert chemin_proxy(tmp_path, "m1", "video", True).name == "m1.webm"
+    assert chemin_proxy(tmp_path, "m1", "video").name == "m1.mp4"

@@ -106,6 +106,21 @@ marge, arrondi). Fondus d'entrée / sortie en un clic.
   exacte demandée (vérifié sur le timecode incrusté d'une vidéo d'essai).
 - Outils MCP testés en session MCP réelle ; Ctrl+Z défait un lot de l'IA.
 
+### Vidéos transparentes et polices de projet
+
+- **Vidéos à couche alpha** : ProRes 4444, QuickTime Animation, PNG, et VP8/VP9 en WebM
+  (repéré par son étiquette `alpha_mode`, que FFmpeg n'affiche pas dans le format
+  de pixels). Aperçu : proxy WebM VP9 transparent (`yuva420p`) ; export : décodage
+  RGBA (décodeur libvpx imposé pour le WebM, matrice BT.709 explicite). Mesuré le
+  2026-11-11 avec un disque orange à 78 % sur un plan de plage : écart au mélange
+  attendu 3,75/255 (ProRes) et 3,40/255 (WebM), pour 2,1-2,6/255 de bruit d'encodage
+  hors du disque.
+- **Polices du projet** : `<projet>/polices/polices.json` (`family`, `weight`,
+  `style`, `unicodeRange`, `fichier`) est chargé par la page, donc par l'aperçu
+  ET l'export, sans rien installer dans Windows. Le pont
+  `montage/outils/vers_editeur.py --calques` y copie les polices exactes d'une
+  composition HyperFrames.
+
 ### Export MP4 (bouton Exporter ou Ctrl+M)
 
 - H.264 + AAC, résolution de la séquence ou 4K / 1080p / 720p, 3 qualités,

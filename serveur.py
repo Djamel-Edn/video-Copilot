@@ -515,9 +515,10 @@ def creer_app(etat: Etat) -> FastAPI:
         return mid
 
     async def proxy(mid, path, kind):
-        dst = medias.chemin_proxy(etat.dossier, mid, kind)
+        m = etat.projet.doc["media"].get(mid, {})
+        dst = medias.chemin_proxy(etat.dossier, mid, kind, m.get("alpha", False))
         try:
-            await asyncio.to_thread(medias.make_proxy, path, dst, kind)
+            await asyncio.to_thread(medias.make_proxy, path, dst, kind, m)
             await etat.systeme([{"op": "set", "path": ["media", mid, "proxy"], "value": str(dst.relative_to(etat.dossier))}])
         except Exception as e:
             await etat.systeme([{"op": "set", "path": ["media", mid, "proxy_error"], "value": str(e)[:300]}])
@@ -598,6 +599,29 @@ def creer_app(etat: Etat) -> FastAPI:
     @app.get("/api/fonts")
     async def fonts():
         return {"fonts": await asyncio.to_thread(medias.polices_systeme)}
+
+    # Polices du projet : <projet>/polices/polices.json = [{family, weight, style, unicodeRange?, fichier}]
+    # (le pont montage → éditeur y copie les polices exactes d'une composition HyperFrames).
+    @app.get("/api/polices")
+    async def polices_projet():
+        d = etat.dossier / "polices"
+        f = d / "polices.json"
+        if not f.exists():
+            return {"polices": []}
+        try:
+            lst = json.loads(f.read_text("utf-8"))
+        except ValueError:
+            return {"polices": []}
+        return {"polices": [{**p, "url": f"/polices/{p['fichier']}"} for p in lst
+                            if isinstance(p, dict) and p.get("family") and (d / str(p.get("fichier", ""))).is_file()]}
+
+    @app.get("/polices/{nom}")
+    async def fichier_police(nom: str):
+        d = (etat.dossier / "polices").resolve()
+        p = (d / nom).resolve()
+        if p.parent != d or not p.is_file():
+            raise HTTPException(404, "Police introuvable.")
+        return FileResponse(p, headers={"Cache-Control": "no-cache"})
 
     @app.get("/media/{mid}/thumb")
     async def thumb(mid: str):
@@ -964,9 +988,12 @@ def creer_app(etat: Etat) -> FastAPI:
                     d = decs.get(c["id"])
                     if d is None:
                         w, h = exp.decode_size(doc, c, out_scale)
+                        med = doc["media"][c["media"]]
+                        # Vidéo transparente : décodée en RGBA (couche alpha comprise) au lieu du YUV.
                         d = decs[c["id"]] = exp.Decodeur(
-                            doc["media"][c["media"]]["path"], c["in"] + (t - c["start"]) * c["speed"], c["speed"],
-                            fps, w, h, sp[c["id"]][1] - t)
+                            med["path"], c["in"] + (t - c["start"]) * c["speed"], c["speed"],
+                            fps, w, h, sp[c["id"]][1] - t, fmt="rgba" if med.get("alpha") else "yuv420p",
+                            entree=medias.options_decodage(med), source_yuv=str(med.get("pix_fmt", "")).startswith("yuv"))
                     payload.append(d.read())
                     head.append({"id": c["id"], "w": d.w, "h": d.h, "fmt": d.fmt})
                 hb = json.dumps({"i": i, "t": t, "clips": head}).encode()

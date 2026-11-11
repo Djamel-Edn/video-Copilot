@@ -46,12 +46,37 @@ def probe(path: Path) -> dict:
         except (ZeroDivisionError, ValueError):
             m["fps"] = 30.0
         m["codec"] = v.get("codec_name")
+        m["pix_fmt"] = v.get("pix_fmt", "")
+        # Transparence : format de pixels à couche alpha (ProRes 4444, PNG, QuickTime
+        # Animation…), ou VP8/VP9 en WebM, qui la range à part et la signale par une étiquette.
+        m["alpha"] = alpha_flux(v)
     m["browser_ok"] = (
         kind == "image"
         or (kind == "audio" and ext in BROWSER_AUDIO)
         or (kind == "video" and m.get("codec") in BROWSER_VIDEO_CODECS and ext in {".mp4", ".webm", ".mov", ".m4v"})
     )
     return m
+
+
+PIX_ALPHA = ("yuva", "rgba", "bgra", "argb", "abgr", "gbrap", "ya8", "ya16", "rgba64", "bgra64")
+
+
+def alpha_flux(stream: dict) -> bool:
+    pf = stream.get("pix_fmt") or ""
+    if pf.startswith(PIX_ALPHA):
+        return True
+    tags = {k.lower(): v for k, v in (stream.get("tags") or {}).items()}
+    return stream.get("codec_name") in ("vp8", "vp9") and str(tags.get("alpha_mode", "")) == "1"
+
+
+def options_decodage(m: dict) -> list[str]:
+    """Décodeur à imposer AVANT -i : le décodeur VP8/VP9 natif de FFmpeg ignore la couche
+    alpha d'un WebM ; seul libvpx la restitue."""
+    if m.get("alpha") and m.get("codec") == "vp9":
+        return ["-c:v", "libvpx-vp9"]
+    if m.get("alpha") and m.get("codec") == "vp8":
+        return ["-c:v", "libvpx"]
+    return []
 
 
 def rotation(stream: dict) -> int:
@@ -69,19 +94,31 @@ def rotation(stream: dict) -> int:
     return int(round(rot / 90.0)) * 90 % 360
 
 
-def proxy_command(src: Path, dst: Path, kind: str) -> list[str]:
+PROXY_SCALE = "scale='if(gt(iw,ih),-2,min(540,iw))':'if(gt(iw,ih),min(540,ih),-2)'"
+
+
+def proxy_command(src: Path, dst: Path, kind: str, m: dict | None = None) -> list[str]:
     if kind == "audio":
         return ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-c:a", "aac", "-b:a", "160k", str(dst)]
+    if m and m.get("alpha"):
+        # Vidéo transparente : WebM VP9 à couche alpha (lue par Chromium / WebView2 avec sa
+        # transparence), une image clé par image comme les autres proxys.
+        return ["ffmpeg", "-y", "-v", "error", *options_decodage(m), "-i", str(src),
+                "-vf", PROXY_SCALE + ",format=yuva420p", "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+                "-b:v", "0", "-crf", "34", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1",
+                "-g", "1", "-auto-alt-ref", "0", "-metadata:s:v:0", "alpha_mode=1",
+                "-c:a", "libopus", "-b:a", "128k", str(dst)]
     # Petit côté à 540 px (paysage comme portrait), une image clé par image : le
     # défilement et les sauts sont instantanés. FFmpeg redresse les vidéos tournées.
     return ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-            "-vf", "scale='if(gt(iw,ih),-2,min(540,iw))':'if(gt(iw,ih),min(540,ih),-2)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+            "-vf", PROXY_SCALE, "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
             "-g", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart", str(dst)]
 
 
-def chemin_proxy(dossier: Path, mid: str, kind: str) -> Path:
-    return dossier / "proxies" / (f"{mid}.m4a" if kind == "audio" else f"{mid}.mp4")
+def chemin_proxy(dossier: Path, mid: str, kind: str, alpha: bool = False) -> Path:
+    ext = "m4a" if kind == "audio" else "webm" if alpha else "mp4"
+    return dossier / "proxies" / f"{mid}.{ext}"
 
 
 def besoin_proxy(m: dict) -> bool:
@@ -103,7 +140,7 @@ def proxys_a_reprendre(doc: dict, dossier: Path) -> tuple[dict[str, str], list[s
             continue
         if m.get("proxy") and (dossier / m["proxy"]).exists():
             continue
-        fini = chemin_proxy(dossier, mid, m["kind"])
+        fini = chemin_proxy(dossier, mid, m["kind"], m.get("alpha", False))
         if not m.get("proxy") and fini.exists():
             a_relier[mid] = str(fini.relative_to(dossier))
         else:
@@ -123,10 +160,12 @@ def nettoyer_partiels(dossier: Path) -> int:
     return n
 
 
-def make_proxy(src: Path, dst: Path, kind: str) -> None:
+def make_proxy(src: Path, dst: Path, kind: str, m: dict | None = None) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.stem + ".part" + dst.suffix)
-    subprocess.run(proxy_command(src, tmp, kind), check=True, capture_output=True, creationflags=NO_WINDOW)
+    r = subprocess.run(proxy_command(src, tmp, kind, m), capture_output=True, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or b"").decode("utf-8", "replace").strip()[-300:] or f"ffmpeg : code {r.returncode}")
     tmp.replace(dst)
 
 

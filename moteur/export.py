@@ -69,17 +69,24 @@ class Decodeur:
     fmt "yuv420p" (BT.709, plage TV) : 1,5 octet par pixel, converti en RVB par la carte graphique."""
 
     def __init__(self, path: str, ss: float, speed: float, fps: float, w: int, h: int, max_dur: float,
-                 fmt: str = "yuv420p"):
+                 fmt: str = "yuv420p", entree: list[str] | None = None, source_yuv: bool = True):
+        """fmt "rgba" : vidéo transparente (4 octets par pixel, alpha non prémultiplié).
+        entree : options placées avant -i (décodeur libvpx pour la couche alpha d'un WebM)."""
         self.fmt = fmt
         self.size = w * h * 3 // 2 if fmt == "yuv420p" else w * h * 4
         self.w, self.h = w, h
-        scale = f"scale={w}:{h}:flags=bicubic" + (":out_color_matrix=bt709:out_range=tv" if fmt == "yuv420p" else "")
+        if fmt == "yuv420p":
+            scale = f"scale={w}:{h}:flags=bicubic:out_color_matrix=bt709:out_range=tv"
+        else:
+            # Source YUV → RVB : matrice BT.709 explicite, comme le reste de l'export (sinon
+            # FFmpeg prend BT.601 pour une source non étiquetée et les couleurs dérivent).
+            scale = f"scale={w}:{h}:flags=bicubic" + (":in_color_matrix=bt709:in_range=tv" if source_yuv else "")
         # Marge manquante avant le début de la source (transition) : on répète la
         # première image le temps qu'il faut, pour que la suite tombe pile au bon instant.
         pad = f"tpad=start_duration={-ss / speed:.6f}:start_mode=clone," if ss < 0 else ""
         vf = f"setpts=(PTS-STARTPTS)/{speed:.6f},{pad}fps={fps:.6f},{scale},format={fmt}"
         self.proc = subprocess.Popen(
-            ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, ss):.6f}", "-t", f"{max_dur * speed + 1:.3f}", "-i", path,
+            ["ffmpeg", "-v", "error", *(entree or []), "-ss", f"{max(0.0, ss):.6f}", "-t", f"{max_dur * speed + 1:.3f}", "-i", path,
              "-an", "-vf", vf, "-f", "rawvideo", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
         self.last = bytes(self.size)
